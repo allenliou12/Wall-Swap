@@ -10,14 +10,22 @@ Usage (see README.md):
 """
 
 import asyncio
+import copy
 import ctypes
+import dataclasses
+import filecmp
 import io
+import json
 import logging
 import os
 import random
+import re
+import shutil
+import subprocess
 import sys
 import threading
 import time
+import webbrowser
 from datetime import datetime
 from pathlib import Path
 
@@ -46,27 +54,46 @@ ICON_PATH = SCRIPT_DIR / "wallswap.ico"
 WALLPAPER_DIR = Path.home() / "Pictures" / "WallSwap"
 LOG_FILE = WALLPAPER_DIR / "wallswap.log"
 HISTORY_FILE = WALLPAPER_DIR / "seen_ids.txt"
-CHANGE_INTERVAL = 30 * 60  # 30 minutes in seconds
+SETTINGS_FILE = WALLPAPER_DIR / "settings.json"
+FAVOURITES_DIR = WALLPAPER_DIR / "Favourites"
 MIN_WIDTH = 2560
 MIN_HEIGHT = 1440
 MAX_WALLPAPERS = 50         # keep only the most recent on disk
 MAX_SEEN_IDS = 5000         # dedup history cap (oldest dropped first)
 USER_AGENT = "WallSwap/1.0 (Windows Desktop Wallpaper Changer)"
+# General Wallhaven searches skip wallpapers with fewer favourites than this (random-sorted
+# results are often low-rated). Not applied to the favourite-game searches: few game
+# wallpapers exist and most have only a handful of favourites.
+WALLHAVEN_MIN_FAVORITES = 30
 
-# Local folders to mix in alongside Wallhaven (top-level images only, not subfolders)
-LOCAL_FOLDERS = [
-    Path.home() / "Pictures" / "Path of Exile 2",
-]
-# Source mix per change (whatever's left over goes to general Wallhaven searches):
-#   PoE total ~40% = LOCAL_CHANCE + POE_WALLHAVEN_CHANCE
-LOCAL_CHANCE = 0.2          # your local folders (PoE 2 screenshots)
-POE_WALLHAVEN_CHANCE = 0.2  # Path of Exile searches on Wallhaven
-POE_WALLHAVEN_QUERIES = ["path of exile", "path of exile 2"]
+# User settings live in SETTINGS_FILE (created from these defaults on first run) and can be
+# changed from the tray menu or by editing the file.
+#   chances: share of changes for each source; whatever's left goes to general Wallhaven
+#   game_*:  a dedicated Wallhaven share for one favourite game
+#   local_folders: your own image folders (top-level images only, not subfolders)
+DEFAULT_SETTINGS = {
+    "interval_minutes": 30,
+    "sources": {"wallhaven": True, "game": True, "museum": True, "local": True},
+    "chances": {"local": 0.2, "game": 0.2, "museum": 0.15},
+    "game_name": "Path of Exile",
+    "game_queries": ["path of exile", "path of exile 2"],
+    "local_folders": [str(Path.home() / "Pictures" / "Path of Exile 2")],
+    # Folders of the favourite game's images, used for the game's share once all of its
+    # Wallhaven wallpapers have been shown (so other folders can't dilute it)
+    "game_folders": [str(Path.home() / "Pictures" / "Path of Exile 2")],
+}
+INTERVAL_CHOICES = [15, 30, 60, 120]  # minutes, offered in the tray menu
+SOURCE_LABELS = {
+    "wallhaven": "Wallhaven",
+    "game": "Wallhaven (favourite game)",
+    "museum": "The Met",
+    "local": "Local folder",
+}
+
 LOCAL_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
 LOCAL_HISTORY_FILE = WALLPAPER_DIR / "seen_local.txt"
 
 # Public-domain paintings from The Metropolitan Museum of Art (no API key needed)
-MUSEUM_CHANCE = 0.15        # chance each change uses a museum painting
 MUSEUM_API = "https://collectionapi.metmuseum.org/public/collection"
 MUSEUM_MIN_RATIO = 1.3      # skip paintings too tall/narrow to fill a 16:9 screen
 MUSEUM_MAX_RATIO = 2.5      # ...or too wide (would crop most of the painting)
@@ -194,7 +221,6 @@ WALLHAVEN_QUERIES = [
     "surreal art",
     "surrealism",
     "minimalist",
-    "3d render",
     # Moon / Night
     "moon",
     "moonlight",
@@ -267,6 +293,97 @@ logging.basicConfig(
 log = logging.getLogger("WallSwap")
 
 
+# ─── Settings ─────────────────────────────────────────────────
+def _merge_settings(defaults, loaded):
+    """Overlay user values on the defaults, ignoring unknown keys and wrong types."""
+    if isinstance(defaults, dict):
+        if not isinstance(loaded, dict):
+            return copy.deepcopy(defaults)
+        return {k: _merge_settings(v, loaded.get(k, v)) for k, v in defaults.items()}
+    if isinstance(defaults, bool):
+        return loaded if isinstance(loaded, bool) else defaults
+    if isinstance(defaults, (int, float)):
+        ok = isinstance(loaded, (int, float)) and not isinstance(loaded, bool) and loaded >= 0
+        return loaded if ok else defaults
+    if isinstance(defaults, list):
+        ok = isinstance(loaded, list) and all(isinstance(x, str) for x in loaded)
+        return list(loaded) if ok else list(defaults)
+    return loaded if isinstance(loaded, type(defaults)) else defaults
+
+
+class Settings:
+    """settings.json, shared by the tray menu and the wallpaper changer."""
+
+    def __init__(self, path: Path):
+        self.path = path
+        # Re-entrant: update() holds it while calling reload() and save(), and the
+        # wallpaper thread's reload() must wait for a tray change to finish saving
+        self.lock = threading.RLock()
+        self.data = copy.deepcopy(DEFAULT_SETTINGS)
+        self.reload()
+
+    def reload(self) -> bool:
+        """Re-read the file. On a broken file, keep the current settings and return False."""
+        with self.lock:
+            if not self.path.exists():
+                self.data = copy.deepcopy(DEFAULT_SETTINGS)
+                self.save()
+                return True
+            try:
+                loaded = json.loads(self.path.read_text(encoding="utf-8"))
+            except (OSError, ValueError) as e:
+                log.warning(f"Can't read {self.path.name}, keeping previous settings: {e}")
+                return False
+            self.data = _merge_settings(DEFAULT_SETTINGS, loaded)
+            return True
+
+    def save(self):
+        """Write via a temp file so a crash mid-save can't leave a half-written file."""
+        with self.lock:
+            tmp = self.path.with_suffix(".json.tmp")
+            tmp.write_text(json.dumps(self.data, indent=2), encoding="utf-8")
+            os.replace(tmp, self.path)
+
+    def update(self, change) -> bool:
+        """Reload, apply change(data), save. Won't overwrite a file the user broke by hand."""
+        with self.lock:
+            if not self.reload():
+                return False
+            change(self.data)
+            self.save()
+            return True
+
+    @property
+    def interval_seconds(self) -> int:
+        return max(1, int(self.data["interval_minutes"])) * 60
+
+    def enabled(self, source: str) -> bool:
+        return self.data["sources"][source]
+
+    def chance(self, source: str) -> float:
+        return self.data["chances"][source]
+
+    @property
+    def local_folders(self) -> list[Path]:
+        return [Path(f) for f in self.data["local_folders"]]
+
+    @property
+    def game_folders(self) -> list[Path]:
+        return [Path(f) for f in self.data["game_folders"]]
+
+
+settings = Settings(SETTINGS_FILE)
+
+
+@dataclasses.dataclass
+class Wallpaper:
+    """A wallpaper ready to set, and where it came from."""
+    path: str
+    source: str             # a key of SOURCE_LABELS
+    title: str
+    url: str | None = None  # web page for the image, if any
+
+
 def load_seen_ids() -> set[str]:
     """Load previously downloaded wallpaper IDs from disk."""
     try:
@@ -275,16 +392,22 @@ def load_seen_ids() -> set[str]:
         return set()
 
 
-def save_seen_id(wp_id: str):
-    """Append a wallpaper ID to the history file, dropping the oldest past the cap."""
+def save_seen_ids(ids):
+    """Append wallpaper IDs to the history file in one write, dropping the oldest past the cap."""
     try:
         history = HISTORY_FILE.read_text().splitlines()  # oldest first
     except FileNotFoundError:
         history = []
-    if wp_id in history:
+    known = set(history)
+    new = [i for i in dict.fromkeys(ids) if i not in known]
+    if not new:
         return
-    history.append(wp_id)
+    history += new
     HISTORY_FILE.write_text("\n".join(history[-MAX_SEEN_IDS:]))
+
+
+def save_seen_id(wp_id: str):
+    save_seen_ids([wp_id])
 
 
 def cleanup_old_wallpapers():
@@ -368,21 +491,23 @@ def is_fullscreen_app_running() -> bool:
 
 
 # ─── Image Validation ─────────────────────────────────────────
-def is_valid_resolution(image_path: str) -> bool:
-    """Check if image meets minimum 1440p resolution."""
-    try:
-        with Image.open(image_path) as img:
-            w, h = img.size
-            return w >= MIN_WIDTH and h >= MIN_HEIGHT
-    except Exception as e:
-        log.warning(f"Can't read image {image_path}: {e}")
+def fits_screen(w: int, h: int, min_ratio: float = 1.0, max_ratio: float = float("inf"),
+                check_size: bool = True) -> bool:
+    """Is a w x h image a usable wallpaper: wider than tall (by min_ratio..max_ratio) and 1440p+?"""
+    if h <= 0 or not (min_ratio < w / h <= max_ratio):
         return False
+    return not check_size or (w >= MIN_WIDTH and h >= MIN_HEIGHT)
 
 
 # ─── Sources ──────────────────────────────────────────────────
-def fetch_from_wallhaven(queries: list[str] | None = None, sorting: str | None = None) -> str | None:
+def fetch_from_wallhaven(queries: list[str] | None = None, sorting: str | None = None,
+                         source: str = "wallhaven") -> Wallpaper | None:
     """Fetch a random 1440p+ wallpaper from Wallhaven."""
-    query = random.choice(queries or WALLHAVEN_QUERIES)
+    if queries is None:
+        queries = WALLHAVEN_QUERIES
+    if not queries:  # e.g. game_queries emptied in settings.json: don't fall back to general
+        return None
+    query = random.choice(queries)
     sorting = sorting or random.choices(
         ["toplist", "hot", "random"], weights=[5, 3, 2], k=1)[0]
 
@@ -428,9 +553,9 @@ def fetch_from_wallhaven(queries: list[str] | None = None, sorting: str | None =
 
             if wp_id in seen:
                 continue
-            if wp_w < MIN_WIDTH or wp_h < MIN_HEIGHT:
+            if source == "wallhaven" and wp.get("favorites", 0) < WALLHAVEN_MIN_FAVORITES:
                 continue
-            if wp_h > wp_w:  # skip vertical/portrait images
+            if not fits_screen(wp_w, wp_h):  # too small, or portrait/square
                 continue
             if not wp_url:
                 continue
@@ -448,14 +573,15 @@ def fetch_from_wallhaven(queries: list[str] | None = None, sorting: str | None =
                 tmp_path = WALLPAPER_DIR / "_temp_wallhaven.jpg"
                 tmp_path.write_bytes(img_resp.content)
                 save_seen_id(wp_id)
-                return str(tmp_path)
+                return Wallpaper(str(tmp_path), source, f"Wallhaven {wp_id} (search: {query})",
+                                 wp.get("url"))
 
     except Exception as e:
         log.warning(f"Wallhaven fetch failed: {e}")
     return None
 
 
-def fetch_from_museum() -> str | None:
+def fetch_from_museum() -> Wallpaper | None:
     """Fetch a random public-domain painting from the Met that fits a wide screen."""
     query = random.choice(MUSEUM_QUERIES)
     try:
@@ -475,38 +601,47 @@ def fetch_from_museum() -> str | None:
         random.shuffle(object_ids)
         seen = load_seen_ids()
         checked = 0
+        decided = []  # objects that got a definite yes/no, never to be checked again
 
-        for obj_id in object_ids:
-            seen_key = f"met_{obj_id}"
-            if seen_key in seen:
-                continue
-            if checked >= 15:  # don't hammer the API
-                break
-            checked += 1
-            save_seen_id(seen_key)  # don't retry this one, whether or not it fits
+        try:
+            for obj_id in object_ids:
+                seen_key = f"met_{obj_id}"
+                if seen_key in seen:
+                    continue
+                if checked >= 15:  # don't hammer the API
+                    break
+                checked += 1
 
-            try:
-                path = _try_museum_object(obj_id)
-            except Exception as e:  # one bad painting shouldn't end the whole search
-                log.warning(f"Met object {obj_id} failed: {e}")
-                (WALLPAPER_DIR / "_temp_museum.jpg").unlink(missing_ok=True)
-                continue
-            if path:
-                return path
+                try:
+                    wallpaper = _try_museum_object(obj_id)
+                except Exception as e:  # network hiccup etc.: skip it now, retry another day
+                    log.warning(f"Met object {obj_id} failed: {e}")
+                    (WALLPAPER_DIR / "_temp_museum.jpg").unlink(missing_ok=True)
+                    continue
+                decided.append(seen_key)
+                if wallpaper:
+                    return wallpaper
+        finally:
+            save_seen_ids(decided)
 
     except Exception as e:
         log.warning(f"Met fetch failed: {e}")
     return None
 
 
-def _try_museum_object(obj_id: int) -> str | None:
+def _museum_get(url: str, timeout: int) -> requests.Response | None:
+    """GET from the Met: None for 404 (gone for good), an exception for other failures."""
+    resp = requests.get(url, headers={"User-Agent": USER_AGENT}, timeout=timeout)
+    if resp.status_code == 404:
+        return None
+    resp.raise_for_status()  # 429/5xx are temporary: don't mark the painting as seen
+    return resp
+
+
+def _try_museum_object(obj_id: int) -> Wallpaper | None:
     """Download one Met object if it's a public-domain painting that fits a wide screen."""
-    obj_resp = requests.get(
-        f"{MUSEUM_API}/v1/objects/{obj_id}",
-        headers={"User-Agent": USER_AGENT},
-        timeout=15,
-    )
-    if obj_resp.status_code != 200:
+    obj_resp = _museum_get(f"{MUSEUM_API}/v1/objects/{obj_id}", timeout=15)
+    if not obj_resp:
         return None
     obj = obj_resp.json()
     image_url = obj.get("primaryImage")
@@ -516,29 +651,26 @@ def _try_museum_object(obj_id: int) -> str | None:
     # Check the shape on the small preview before downloading the full image
     small_url = obj.get("primaryImageSmall")
     if small_url:
-        small = requests.get(
-            small_url, headers={"User-Agent": USER_AGENT}, timeout=15)
-        if small.status_code != 200:
+        small = _museum_get(small_url, timeout=15)
+        if not small:
             return None
         with Image.open(io.BytesIO(small.content)) as preview:
-            pw, ph = preview.size
-        if not MUSEUM_MIN_RATIO <= pw / ph <= MUSEUM_MAX_RATIO:
-            return None
+            if not fits_screen(*preview.size, MUSEUM_MIN_RATIO, MUSEUM_MAX_RATIO, check_size=False):
+                return None
 
-    img_resp = requests.get(
-        image_url, headers={"User-Agent": USER_AGENT}, timeout=30)
-    if img_resp.status_code != 200:
+    img_resp = _museum_get(image_url, timeout=30)
+    if not img_resp:
         return None
 
     tmp_path = WALLPAPER_DIR / "_temp_museum.jpg"
     tmp_path.write_bytes(img_resp.content)
     with Image.open(tmp_path) as img:
         w, h = img.size
-    ratio = w / h
-    if w >= MIN_WIDTH and h >= MIN_HEIGHT and MUSEUM_MIN_RATIO <= ratio <= MUSEUM_MAX_RATIO:
+    if fits_screen(w, h, MUSEUM_MIN_RATIO, MUSEUM_MAX_RATIO):
         artist = obj.get("artistDisplayName") or "Unknown artist"
-        log.info(f"Met painting: '{obj.get('title')}' by {artist} ({w}x{h})")
-        return str(tmp_path)
+        title = f"{obj.get('title') or 'Untitled'} by {artist}"
+        log.info(f"Met painting: {title} ({w}x{h})")
+        return Wallpaper(str(tmp_path), "museum", title, obj.get("objectURL"))
     tmp_path.unlink(missing_ok=True)
     return None
 
@@ -547,17 +679,18 @@ def is_landscape_wallpaper(image_path: Path) -> bool:
     """Check a local image is 1440p+ and landscape."""
     try:
         with Image.open(image_path) as img:
-            w, h = img.size
-            return w >= MIN_WIDTH and h >= MIN_HEIGHT and w > h
+            return fits_screen(*img.size)
     except Exception as e:
         log.warning(f"Can't read image {image_path}: {e}")
         return False
 
 
-def pick_local_wallpaper() -> str | None:
-    """Pick a random image from LOCAL_FOLDERS, cycling through all before repeating."""
+def pick_local_wallpaper(folders: list[Path] | None = None) -> Wallpaper | None:
+    """Pick a random image from the folders (default: local folders), cycling before repeating."""
+    if folders is None:
+        folders = settings.local_folders
     candidates = [
-        p for folder in LOCAL_FOLDERS if folder.is_dir()
+        p for folder in folders if folder.is_dir()
         for p in folder.iterdir()
         if p.is_file() and p.suffix.lower() in LOCAL_EXTENSIONS
     ]
@@ -576,87 +709,109 @@ def pick_local_wallpaper() -> str | None:
 
     for pool in pools:
         if pool is candidates:
-            seen = set()
+            # New cycle for these folders only; other folders keep their progress
+            seen -= {str(p) for p in candidates}
         random.shuffle(pool)
         for path in pool:
             seen.add(str(path))
             if is_landscape_wallpaper(path):
                 LOCAL_HISTORY_FILE.write_text("\n".join(seen), encoding="utf-8")
                 log.info(f"Picked local wallpaper: {path}")
-                return str(path)
+                return Wallpaper(str(path), "local", path.name)
 
     LOCAL_HISTORY_FILE.write_text("\n".join(seen), encoding="utf-8")
     return None
 
 
 # ─── Core Logic ───────────────────────────────────────────────
-def get_new_wallpaper() -> str | None:
-    """Pick a source at random (local / PoE / museum / Wallhaven), falling back if it fails."""
-    roll = random.random()
-    if roll < LOCAL_CHANCE:
-        path = pick_local_wallpaper()
-        if path:
-            return path
-    elif roll < LOCAL_CHANCE + POE_WALLHAVEN_CHANCE:
-        # Only ~30 PoE wallpapers exist on Wallhaven: "random" sorting reaches all of them
-        # (toplist only returns a few), and once all are seen, use the local PoE folder instead.
-        path = download_wallpaper(
-            lambda: fetch_from_wallhaven(POE_WALLHAVEN_QUERIES, "random"),
-            "wallhaven", attempts=2)
-        if path:
-            return path
-        path = pick_local_wallpaper()
-        if path:
-            return path
-    elif roll < LOCAL_CHANCE + POE_WALLHAVEN_CHANCE + MUSEUM_CHANCE:
-        path = download_wallpaper(fetch_from_museum, "met", attempts=3)
-        if path:
-            return path
-
-    path = download_wallpaper(fetch_from_wallhaven, "wallhaven")
-    if path:
-        return path
-
-    # Wallhaven down / offline: fall back to local images
-    return pick_local_wallpaper()
+def fetch_source(source: str) -> Wallpaper | None:
+    """Get one wallpaper from the named source."""
+    if source == "local":
+        return pick_local_wallpaper()
+    if source == "game":
+        # Few game wallpapers exist on Wallhaven: "random" sorting reaches all of them
+        # (toplist only returns a handful). Once they've all been shown, use the game folders.
+        queries = settings.data["game_queries"]
+        wallpaper = queries and download_wallpaper(
+            lambda: fetch_from_wallhaven(queries, "random", source="game"), attempts=2)
+        return wallpaper or pick_local_wallpaper(settings.game_folders)
+    if source == "museum":
+        return download_wallpaper(fetch_from_museum, attempts=3)
+    return download_wallpaper(fetch_from_wallhaven)
 
 
-def download_wallpaper(fetch, source: str, attempts: int = 5) -> str | None:
+def source_weights() -> dict[str, float]:
+    """Share of changes per enabled source; general Wallhaven gets whatever's left."""
+    chances = {s: settings.chance(s) for s in ("local", "game", "museum")}
+    weights = {**chances, "wallhaven": max(0.0, 1 - sum(chances.values()))}
+    return {s: w for s, w in weights.items() if w > 0 and settings.enabled(s)}
+
+
+def get_new_wallpaper() -> Wallpaper | None:
+    """Pick a source at random by weight, falling back to the others if it fails."""
+    weights = source_weights()
+    if not weights:
+        log.warning("Every source is turned off (or has a chance of 0)")
+        return None
+    choice = random.choices(list(weights), weights=list(weights.values()), k=1)[0]
+
+    # Fallbacks: general Wallhaven, then local folders (e.g. when offline)
+    order = [choice, "wallhaven", "local"]
+    tried = set()
+    for source in order:
+        if source in tried or not settings.enabled(source):
+            continue
+        tried.add(source)
+        wallpaper = fetch_source(source)
+        if wallpaper:
+            return wallpaper
+    return None
+
+
+def download_wallpaper(fetch, attempts: int = 5) -> Wallpaper | None:
     """Run an online fetcher and save its result as a JPEG in WALLPAPER_DIR."""
     for attempt in range(attempts):
         try:
-            tmp_path = fetch()
-            if tmp_path:
+            wallpaper = fetch()
+            if wallpaper:
+                prefix = "met" if wallpaper.source == "museum" else "wallhaven"
                 timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-                final_name = f"wallswap_{source}_{timestamp}.jpg"
+                final_name = f"wallswap_{prefix}_{timestamp}.jpg"
                 final_path = WALLPAPER_DIR / final_name
 
-                with Image.open(tmp_path) as img:
+                with Image.open(wallpaper.path) as img:
                     img = img.convert("RGB")
                     img.save(str(final_path), "JPEG", quality=95)
 
-                Path(tmp_path).unlink(missing_ok=True)
+                Path(wallpaper.path).unlink(missing_ok=True)
                 log.info(f"Saved: {final_name}")
                 cleanup_old_wallpapers()
-                return str(final_path)
+                return dataclasses.replace(wallpaper, path=str(final_path))
         except Exception as e:
-            log.warning(f"{source} attempt {attempt + 1} failed: {e}")
+            log.warning(f"Download attempt {attempt + 1} failed: {e}")
 
-    log.warning(f"All {source} attempts failed this round")
+    log.warning("All download attempts failed this round")
     return None
 
 
 # ─── System Tray App ─────────────────────────────────────────
+def _safe_filename(text: str) -> str:
+    """Turn a title into something Windows accepts as a file name."""
+    name = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "", text).strip(" .")
+    return name[:120] or "wallpaper"
+
+
 class WallSwapApp:
     def __init__(self):
         self.paused = False
         self.running = True
         self.icon = None
         self.timer_thread = None
-        self.current_wallpaper = "None yet"
+        self.current: Wallpaper | None = None
         self.wallpapers_set = 0
         self.elapsed = 0
         self.change_lock = threading.Lock()  # one wallpaper change at a time
+        self.folder_dialog_open = False
 
     def create_tray_icon(self) -> Image.Image:
         """Load the app icon for the system tray."""
@@ -683,6 +838,20 @@ class WallSwapApp:
             draw.text((14, 10), "W", fill="white", font=font)
             return img
 
+    def notify(self, message: str, title: str = "WallSwap"):
+        """Show a Windows notification from the tray icon."""
+        log.info(f"{title}: {message}")
+        try:
+            if self.icon:
+                self.icon.notify(message[:250], title[:60])
+        except Exception as e:
+            log.warning(f"Notification failed: {e}")
+
+    def refresh_menu(self):
+        if self.icon:
+            self.icon.update_menu()
+
+    # ── Wallpaper changes ──
     def next_wallpaper(self, _=None):
         """Manually trigger next wallpaper and reset timer."""
         self.elapsed = 0
@@ -703,19 +872,63 @@ class WallSwapApp:
             log.info("Fullscreen app detected, skipping wallpaper change")
             return
 
+        settings.reload()  # pick up hand edits to settings.json
         log.info("Fetching new wallpaper...")
-        path = get_new_wallpaper()
-        if path:
-            try:
-                set_wallpaper(path)
-                set_lock_screen(path)
-                self.current_wallpaper = Path(path).name
-                self.wallpapers_set += 1
-            except Exception as e:
-                log.error(f"Failed to set wallpaper: {e}")
-        else:
+        wallpaper = get_new_wallpaper()
+        if not wallpaper:
             log.warning("Could not fetch a new wallpaper this round")
+            return
+        try:
+            set_wallpaper(wallpaper.path)
+            set_lock_screen(wallpaper.path)
+            self.current = wallpaper
+            self.wallpapers_set += 1
+            if self.icon:
+                self.icon.title = f"WallSwap: {wallpaper.title}"[:127]
+            self.refresh_menu()
+        except Exception as e:
+            log.error(f"Failed to set wallpaper: {e}")
 
+    # ── Current wallpaper ──
+    def save_favourite(self, _=None):
+        """Copy the current wallpaper into the Favourites folder (never cleaned up)."""
+        wallpaper = self.current
+        if not wallpaper or not Path(wallpaper.path).exists():
+            self.notify("There's no current wallpaper to save yet.")
+            return
+        FAVOURITES_DIR.mkdir(parents=True, exist_ok=True)
+        base, suffix = _safe_filename(wallpaper.title), Path(wallpaper.path).suffix
+        dest = FAVOURITES_DIR / f"{base}{suffix}"
+        n = 2
+        while dest.exists():
+            # Same file saved before (copy2 keeps size and timestamp)? Otherwise it's a
+            # different picture that happens to share the title: number it
+            if filecmp.cmp(wallpaper.path, dest):
+                self.notify(f"Already in Favourites: {dest.name}")
+                return
+            dest = FAVOURITES_DIR / f"{base} ({n}){suffix}"
+            n += 1
+        try:
+            shutil.copy2(wallpaper.path, dest)
+            self.notify(f"Saved {dest.name}", "Added to Favourites")
+        except OSError as e:
+            self.notify(f"Couldn't save it: {e}")
+
+    def open_source(self, _=None):
+        """Show what the current wallpaper is, and open its web page (or its file)."""
+        wallpaper = self.current
+        if not wallpaper:
+            self.notify("No wallpaper has been set yet.")
+            return
+        self.notify(wallpaper.title, SOURCE_LABELS.get(wallpaper.source, "Wallpaper"))
+        # The link comes from API data; only ever open a real web page (on Windows,
+        # webbrowser.open would launch anything else like a double-clicked file)
+        if wallpaper.url and wallpaper.url.startswith("https://"):
+            webbrowser.open(wallpaper.url)
+        elif Path(wallpaper.path).exists():
+            subprocess.Popen(["explorer", "/select,", wallpaper.path])
+
+    # ── Settings ──
     def toggle_pause(self, _=None):
         """Pause/resume automatic wallpaper changing."""
         self.paused = not self.paused
@@ -724,6 +937,96 @@ class WallSwapApp:
         # Update the icon
         if self.icon:
             self.icon.icon = self.create_tray_icon()
+
+    def _change_setting(self, change, done_message: str | None = None):
+        if settings.update(change):
+            self.refresh_menu()
+            if done_message:
+                self.notify(done_message)
+        else:
+            self.notify("settings.json has a mistake in it, so nothing was changed. "
+                        "Fix it or delete it to go back to the defaults.")
+
+    def interval_item(self, minutes: int) -> pystray.MenuItem:
+        label = f"{minutes} min" if minutes < 60 else f"{minutes // 60} hour" + ("s" if minutes > 60 else "")
+
+        def choose(icon, item):
+            self._change_setting(lambda d: d.update(interval_minutes=minutes))
+            log.info(f"Interval set to {minutes} minutes")
+
+        return pystray.MenuItem(
+            label, choose, radio=True,
+            checked=lambda item: settings.data["interval_minutes"] == minutes)
+
+    def source_item(self, source: str, label) -> pystray.MenuItem:
+        def toggle(icon, item):
+            self._change_setting(
+                lambda d: d["sources"].update({source: not d["sources"][source]}))
+
+        return pystray.MenuItem(label, toggle, checked=lambda item: settings.enabled(source))
+
+    def local_folder_items(self):
+        """Submenu listing local folders (click one to remove it) plus 'Add Folder…'."""
+        yield pystray.MenuItem("➕ Add Folder…", self.add_local_folder)
+        yield pystray.Menu.SEPARATOR
+        local, game = settings.data["local_folders"], settings.data["game_folders"]
+        folders = local + [f for f in game if f not in local]
+        if not folders:
+            yield pystray.MenuItem("(no folders yet)", None, enabled=False)
+        for folder in folders:
+            tag = f"  ({settings.data['game_name']})" if folder in game else ""
+            yield pystray.MenuItem(f"✖ Remove  {folder}{tag}", self._remove_folder_action(folder))
+
+    def _remove_folder_action(self, folder: str):
+        def remove(icon, item):
+            def change(d):
+                for key in ("local_folders", "game_folders"):
+                    if folder in d[key]:
+                        d[key].remove(folder)
+            self._change_setting(change, f"Removed {folder}")
+        return remove
+
+    def add_local_folder(self, _=None):
+        if self.folder_dialog_open:
+            return
+        self.folder_dialog_open = True  # set before the thread starts, so a double-click can't open two
+        threading.Thread(target=self._pick_folder, daemon=True).start()
+
+    def _pick_folder(self):
+        """Ask for a folder with the standard Windows dialog, then add it."""
+        try:
+            import tkinter as tk
+            from tkinter import filedialog
+
+            root = tk.Tk()
+            root.withdraw()
+            root.attributes("-topmost", True)
+            folder = filedialog.askdirectory(
+                parent=root, title="Choose a folder of wallpapers",
+                initialdir=str(Path.home() / "Pictures"))
+            root.destroy()
+        except Exception as e:
+            log.error(f"Folder picker failed: {e}")
+            folder = ""
+        finally:
+            self.folder_dialog_open = False
+
+        if not folder:
+            return
+        folder = str(Path(folder))
+        if folder in settings.data["local_folders"]:
+            self.notify(f"Already using {folder}")
+            return
+        self._change_setting(
+            lambda d: d["local_folders"].append(folder) if folder not in d["local_folders"] else None,
+            f"Added {folder}")
+
+    def open_settings(self, _=None):
+        """Open settings.json in Notepad."""
+        if not SETTINGS_FILE.exists():
+            settings.save()
+        subprocess.Popen(["notepad.exe", str(SETTINGS_FILE)])
+        self.notify("Changes you make in the file apply from the next wallpaper change.")
 
     def open_folder(self, _=None):
         """Open the wallpaper save folder."""
@@ -749,37 +1052,48 @@ class WallSwapApp:
                 continue
 
             self.elapsed += 5
-            if self.elapsed >= CHANGE_INTERVAL:
+            if self.elapsed >= settings.interval_seconds:
                 self.elapsed = 0
                 self._change_wallpaper()
+
+    def build_menu(self) -> pystray.Menu:
+        has_current = lambda item: self.current is not None  # noqa: E731
+        return pystray.Menu(
+            pystray.MenuItem("🔄 Next Wallpaper", self.next_wallpaper, default=True),
+            pystray.MenuItem("⭐ Favourite", self.save_favourite, enabled=has_current),
+            pystray.MenuItem("🔗 Details", self.open_source, enabled=has_current),
+            pystray.Menu.SEPARATOR,
+            pystray.MenuItem("⏸ Pause", self.toggle_pause, checked=lambda item: self.paused),
+            pystray.MenuItem("⏱ Interval", pystray.Menu(
+                *[self.interval_item(m) for m in INTERVAL_CHOICES])),
+            pystray.MenuItem("🌐 Sources", pystray.Menu(
+                self.source_item("wallhaven", "Wallhaven (general)"),
+                self.source_item("game", lambda item: f"Wallhaven: {settings.data['game_name']}"),
+                self.source_item("museum", "The Met (paintings)"),
+                self.source_item("local", "My folders"),
+            )),
+            pystray.MenuItem("📂 My Folders", pystray.Menu(self.local_folder_items)),
+            pystray.Menu.SEPARATOR,
+            pystray.MenuItem("⚙️ Settings", self.open_settings),
+            pystray.MenuItem("📁 WallSwap Folder", self.open_folder),
+            pystray.Menu.SEPARATOR,
+            pystray.MenuItem("❌ Quit", self.quit_app),
+        )
 
     def run(self):
         """Start the system tray application."""
         log.info("=" * 50)
         log.info("WallSwap starting up!")
         log.info(f"Wallpaper folder: {WALLPAPER_DIR}")
-        log.info(f"Interval: {CHANGE_INTERVAL // 60} minutes")
+        log.info(f"Interval: {settings.interval_seconds // 60} minutes")
         log.info(f"Min resolution: {MIN_WIDTH}x{MIN_HEIGHT}")
         log.info("=" * 50)
-
-        menu = pystray.Menu(
-            pystray.MenuItem("🔄 Next Wallpaper",
-                             self.next_wallpaper, default=True),
-            pystray.Menu.SEPARATOR,
-            pystray.MenuItem(
-                "⏸ Pause / Resume",
-                self.toggle_pause,
-            ),
-            pystray.MenuItem("📁 Open Wallpaper Folder", self.open_folder),
-            pystray.Menu.SEPARATOR,
-            pystray.MenuItem("❌ Quit WallSwap", self.quit_app),
-        )
 
         self.icon = pystray.Icon(
             "WallSwap",
             self.create_tray_icon(),
             "WallSwap - Fresh Wallpapers",
-            menu,
+            self.build_menu(),
         )
 
         # Start timer in background thread

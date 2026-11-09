@@ -44,13 +44,22 @@ The WallSwap icon appears in your system tray (bottom-right of the taskbar). Onl
 
 ## 🖱️ System Tray Controls
 
-| Action | What it does |
+Double-click the tray icon for the next wallpaper. Right-click it for the menu:
+
+| Menu item | What it does |
 |---|---|
-| **Double-click** tray icon | Next wallpaper now |
-| **Right-click → Next Wallpaper** | Next wallpaper now |
-| **Right-click → Pause / Resume** | Toggle auto-changing (icon turns orange) |
-| **Right-click → Open Wallpaper Folder** | Browse saved wallpapers and the log |
-| **Right-click → Quit WallSwap** | Exit |
+| 🔄 **Next Wallpaper** | Next wallpaper now |
+| ⭐ **Favourite** | Copies the current wallpaper to `Pictures/WallSwap/Favourites/`, which is never cleaned up |
+| 🔗 **Details** | Shows what the current wallpaper is and opens its Wallhaven or Met page (or shows a local file in Explorer) |
+| ⏸ **Pause** | Toggle auto-changing (icon turns orange) |
+| ⏱ **Interval ▸** | Change every 15 min, 30 min, 1 hour or 2 hours |
+| 🌐 **Sources ▸** | Turn each source on or off |
+| 📂 **My Folders ▸** | Add one of your own image folders with a folder picker, or click one to remove it |
+| ⚙️ **Settings** | Edit `settings.json` in Notepad |
+| 📁 **WallSwap Folder** | Browse downloads, favourites and the log |
+| ❌ **Quit** | Exit |
+
+Hover over the tray icon to see the current wallpaper's title.
 
 ---
 
@@ -65,29 +74,32 @@ Copy or rename `wallpaper_changer.py` to `wallpaper_changer.pyw` (note the **w**
 
 ## ⚙️ Customization
 
-All settings are at the top of `wallpaper_changer.py`.
+Most things can be changed from the tray menu. Everything else is in `Pictures/WallSwap/settings.json`, created on first run. Open it with **⚙️ Settings** in the tray menu; edits apply from the next wallpaper change. If the file gets broken, WallSwap keeps its previous settings, and deleting the file restores the defaults.
 
-### Source mix
-Each wallpaper change rolls once to pick a source; whatever is left over goes to general Wallhaven searches. If a source fails (offline, nothing new found), WallSwap falls back to Wallhaven and then to your local folders.
+```json
+{
+  "interval_minutes": 30,
+  "sources": {"wallhaven": true, "game": true, "museum": true, "local": true},
+  "chances": {"local": 0.2, "game": 0.2, "museum": 0.15},
+  "game_name": "Path of Exile",
+  "game_queries": ["path of exile", "path of exile 2"],
+  "local_folders": ["C:\\Users\\<YourName>\\Pictures\\Path of Exile 2"],
+  "game_folders": ["C:\\Users\\<YourName>\\Pictures\\Path of Exile 2"]
+}
+```
 
-| Setting | Default | Description |
-|---|---|---|
-| `LOCAL_CHANCE` | `0.2` | Chance of an image from `LOCAL_FOLDERS` |
-| `POE_WALLHAVEN_CHANCE` | `0.2` | Chance of a Wallhaven search from `POE_WALLHAVEN_QUERIES` |
-| `MUSEUM_CHANCE` | `0.15` | Chance of a Met painting |
-| *(rest)* | `0.45` | General Wallhaven search from `WALLHAVEN_QUERIES` |
+| Setting | Description |
+|---|---|
+| `interval_minutes` | Minutes between changes |
+| `sources` | Turn each source on (`true`) or off (`false`) |
+| `chances` | Share of changes for local folders, the favourite game and Met paintings. Whatever's left (0.45 by default) goes to general Wallhaven searches. Turning a source off shares its part among the others |
+| `game_name` / `game_queries` | The favourite game shown in the Sources menu, and its Wallhaven searches. Change them to any game you like |
+| `local_folders` | Your own image folders (top-level files only, not subfolders). Missing folders are skipped |
+| `game_folders` | Folders of the favourite game's images (e.g. your screenshots). Once all of the game's Wallhaven wallpapers have been shown, its share uses these, so adding other folders can't dilute it. Marked with the game's name in **📂 My Folders** |
 
-### Other settings
+If a source fails (offline, nothing new found), WallSwap falls back to general Wallhaven and then to your local folders. General Wallhaven searches skip wallpapers with fewer than 30 favourites (`WALLHAVEN_MIN_FAVORITES`); the favourite game's searches don't, since few game wallpapers exist.
 
-| Setting | Default | Description |
-|---|---|---|
-| `LOCAL_FOLDERS` | `Pictures/Path of Exile 2` | Your own image folders (top-level files only, not subfolders). Missing folders are skipped |
-| `POE_WALLHAVEN_QUERIES` | `path of exile`, `path of exile 2` | Searches for the favourite-game share. Change them to any game you like |
-| `WALLHAVEN_QUERIES` | ~150 terms | General Wallhaven search terms |
-| `MUSEUM_QUERIES` | ~20 terms | Search terms for Met paintings |
-| `CHANGE_INTERVAL` | `30 * 60` | Seconds between changes |
-| `MIN_WIDTH` / `MIN_HEIGHT` | `2560` / `1440` | Minimum wallpaper size |
-| `MAX_WALLPAPERS` | `50` | Downloaded wallpapers kept on disk |
+A few advanced settings stay at the top of `wallpaper_changer.py`: the general Wallhaven and Met search terms (`WALLHAVEN_QUERIES`, `MUSEUM_QUERIES`), the minimum size (`MIN_WIDTH` / `MIN_HEIGHT`, 2560×1440) and how many downloads to keep (`MAX_WALLPAPERS`, 50).
 
 ---
 
@@ -97,9 +109,9 @@ Each wallpaper change rolls once to pick a source; whatever is left over goes to
 C:\Users\<YourName>\Pictures\WallSwap\
 ```
 
-Downloads are named `wallswap_wallhaven_*.jpg` and `wallswap_met_*.jpg`. Images from your own folders are used in place and never copied or deleted. The folder also holds `wallswap.log` and the history files that prevent repeats (`seen_ids.txt`, `seen_local.txt`).
+Downloads are named `wallswap_wallhaven_*.jpg` and `wallswap_met_*.jpg`. Images from your own folders are used in place and never copied or deleted. The folder also holds `settings.json`, `wallswap.log` and the history files that prevent repeats (`seen_ids.txt`, `seen_local.txt`).
 
-> Downloaded wallpapers beyond the newest 50 are deleted automatically. Copy any favourites somewhere else to keep them.
+> Downloaded wallpapers beyond the newest 50 are deleted automatically. Use **⭐ Favourite** in the tray menu to keep one: it's copied to the `Favourites` subfolder, which is never cleaned up.
 
 ---
 
