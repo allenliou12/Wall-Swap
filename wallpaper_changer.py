@@ -12,6 +12,7 @@ Usage (see README.md):
 import asyncio
 import copy
 import ctypes
+import ctypes.wintypes
 import dataclasses
 import filecmp
 import io
@@ -441,6 +442,20 @@ def cleanup_old_wallpapers():
 
 
 # ─── Windows API ──────────────────────────────────────────────
+MONITOR_DEFAULTTONEAREST = 2  # Use the nearest monitor if the window does not intersect one
+GWL_STYLE = -16  # Read the window style rather than another window attribute
+WS_CAPTION = 0x00C00000  # A full caption combines the border and dialog-frame bits
+
+
+class MONITORINFO(ctypes.Structure):
+    _fields_ = [
+        ("cbSize", ctypes.wintypes.DWORD),
+        ("rcMonitor", ctypes.wintypes.RECT),
+        ("rcWork", ctypes.wintypes.RECT),
+        ("dwFlags", ctypes.wintypes.DWORD),
+    ]
+
+
 def set_wallpaper(image_path: str):
     """Set the desktop wallpaper using Windows API."""
     SPI_SETDESKWALLPAPER = 0x0014
@@ -473,6 +488,16 @@ def set_lock_screen(image_path: str):
         log.warning(f"Failed to set lock screen: {e}")
 
 
+def _covers(window: ctypes.wintypes.RECT, monitor: ctypes.wintypes.RECT) -> bool:
+    """Check if a window covers all four edges of a monitor."""
+    return (
+        window.left <= monitor.left
+        and window.top <= monitor.top
+        and window.right >= monitor.right
+        and window.bottom >= monitor.bottom
+    )
+
+
 def is_fullscreen_app_running() -> bool:
     """Detect if a fullscreen application (like a game) is running."""
     try:
@@ -487,21 +512,26 @@ def is_fullscreen_app_running() -> bool:
         if class_name.value in ("Progman", "WorkerW"):
             return False
 
-        import ctypes.wintypes
+        # Maximized windows with a full caption are ordinary apps; borderless ones can be games
+        if (
+            user32.IsZoomed(hwnd)
+            and (user32.GetWindowLongW(hwnd, GWL_STYLE) & WS_CAPTION) == WS_CAPTION
+        ):
+            return False
+
         rect = ctypes.wintypes.RECT()
         user32.GetWindowRect(hwnd, ctypes.byref(rect))
 
-        screen_w = user32.GetSystemMetrics(0)
-        screen_h = user32.GetSystemMetrics(1)
+        monitor = user32.MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST)
+        info = MONITORINFO()
+        info.cbSize = ctypes.sizeof(info)
+        if not user32.GetMonitorInfoW(monitor, ctypes.byref(info)):
+            return False
 
-        # Check if foreground window covers the full screen
-        return (
-            rect.left <= 0
-            and rect.top <= 0
-            and rect.right >= screen_w
-            and rect.bottom >= screen_h
-        )
+        # Check if foreground window covers its full monitor
+        return _covers(rect, info.rcMonitor)
     except Exception:
+        # If a Windows check fails, allow the wallpaper change as usual
         return False
 
 
