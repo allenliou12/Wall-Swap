@@ -29,6 +29,24 @@ def test_shortcut_spec_falls_back_to_executable(tmp_path):
     assert spec.target == str(tmp_path / "Scripts" / "python.exe")
 
 
+def test_frozen_shortcut_spec_targets_the_exe(tmp_path):
+    exe = tmp_path / "WallSwap" / "WallSwap.exe"
+    spec = wc.startup_shortcut_spec(exe, tmp_path / "_internal" / "wallpaper_changer.py",
+                                    tmp_path / "_internal" / "wallswap.ico", pythonw_exists=False, frozen=True)
+    assert spec == wc.ShortcutSpec(target=str(exe), arguments="", working_dir=str(exe.parent), icon=f"{exe},0")
+
+
+def test_turning_on_when_frozen_writes_the_exe_shortcut(appdata, monkeypatch, tmp_path):
+    exe = tmp_path / "WallSwap" / "WallSwap.exe"
+    monkeypatch.setattr(wc, "FROZEN", True)
+    monkeypatch.setattr(wc.sys, "executable", str(exe))
+    written = []
+    wc.set_start_with_windows(True, write=lambda path, spec: written.append((path, spec)))
+    (path, spec), = written
+    assert path == appdata / wc.STARTUP_SHORTCUT_NAME
+    assert (spec.target, spec.arguments, spec.working_dir) == (str(exe), "", str(exe.parent))
+
+
 @pytest.fixture
 def appdata(tmp_path, monkeypatch) -> Path:
     monkeypatch.setenv("APPDATA", str(tmp_path / "AppData"))

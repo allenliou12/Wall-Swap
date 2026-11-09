@@ -9,7 +9,15 @@ Small Windows tray app that changes my wallpaper (and lock screen) every 30 minu
 
 Everything is 2560x1440 or bigger and landscape. It doesn't repeat images, and it won't change the wallpaper while a fullscreen game is running. No API keys needed.
 
-## Running it
+## Installing it
+
+Windows 10/11, no Python needed. Download the WallSwap zip from the Releases page, unzip it somewhere that will stay put (for example `Documents\WallSwap`), and run `WallSwap.exe`. Keep the `_internal` folder next to it.
+
+The exe isn't code-signed, so the first time you run it Windows SmartScreen may say "Windows protected your PC". Click **More info**, then **Run anyway**. If you'd rather not, run it from source as shown below.
+
+If you turn on Start with Windows, the shortcut points at that `WallSwap.exe`; if you move the folder later, turn the switch off and on again.
+
+## Running it from source
 
 Windows 10/11, Python 3.13+.
 
@@ -26,6 +34,15 @@ python wallpaper_changer.py
 ```
 
 The `winrt` packages are only for the lock screen; without them it just does the desktop.
+
+To build the exe yourself:
+
+```
+uv sync
+uv run pyinstaller --noconfirm WallSwap.spec
+```
+
+That makes `dist\WallSwap\WallSwap.exe`; zip the whole `dist\WallSwap` folder to share it.
 
 The first time it runs, the settings window opens so you can pick what you want. The first wallpaper changes straight away with the starter mix while you look around.
 

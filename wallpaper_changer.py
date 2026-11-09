@@ -54,8 +54,11 @@ except ImportError:
     sys.exit(1)
 
 # ─── Configuration ────────────────────────────────────────────
+# A PyInstaller build sets sys.frozen; its bundled files (the icon) unpack to sys._MEIPASS, not next to this file
+FROZEN = getattr(sys, "frozen", False)
 SCRIPT_DIR = Path(__file__).resolve().parent
-ICON_PATH = SCRIPT_DIR / "wallswap.ico"
+BUNDLE_DIR = Path(getattr(sys, "_MEIPASS", SCRIPT_DIR)) if FROZEN else SCRIPT_DIR
+ICON_PATH = BUNDLE_DIR / "wallswap.ico"
 WALLPAPER_DIR = Path.home() / "Pictures" / "WallSwap"
 LOG_FILE = WALLPAPER_DIR / "wallswap.log"
 HISTORY_FILE = WALLPAPER_DIR / "seen_ids.txt"
@@ -250,7 +253,8 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(message)s",
     handlers=[
         RotatingFileHandler(LOG_FILE, maxBytes=1_000_000, backupCount=2, encoding="utf-8"),
-        logging.StreamHandler(),
+        # The windowed .exe has no console: sys.stderr is None there, so log only to the file
+        *([logging.StreamHandler()] if sys.stderr is not None else []),
     ],
 )
 log = logging.getLogger("WallSwap")
@@ -703,8 +707,16 @@ class ShortcutSpec:
     icon: str
 
 
-def startup_shortcut_spec(executable: Path, script: Path, icon: Path, pythonw_exists: bool) -> ShortcutSpec:
-    """Describe the shortcut that starts WallSwap; pythonw when present so no console window opens."""
+def startup_shortcut_spec(executable: Path, script: Path, icon: Path, pythonw_exists: bool,
+                          frozen: bool = False) -> ShortcutSpec:
+    """Describe the shortcut that starts WallSwap; pythonw when present so no console window opens.
+
+    Frozen (the WallSwap.exe build), the exe is the whole app: no script argument, it starts in its own folder,
+    and its embedded icon is the shortcut's icon.
+    """
+    if frozen:
+        return ShortcutSpec(target=str(executable), arguments="", working_dir=str(executable.parent),
+                            icon=f"{executable},0")
     return ShortcutSpec(
         target=str(executable.with_name("pythonw.exe") if pythonw_exists else executable),
         arguments=f'"{script}"',
@@ -776,7 +788,7 @@ def set_start_with_windows(enabled: bool, write=write_shortcut) -> None:
         return
     exe = Path(sys.executable)
     write(path, startup_shortcut_spec(exe, SCRIPT_DIR / "wallpaper_changer.py", ICON_PATH,
-                                      exe.with_name("pythonw.exe").exists()))
+                                      exe.with_name("pythonw.exe").exists(), frozen=FROZEN))
 
 
 # ─── Image Validation ─────────────────────────────────────────

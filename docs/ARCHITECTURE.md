@@ -47,6 +47,13 @@ In `~/Pictures/WallSwap`: `settings.json` · `settings.json.bak` (the pre-settin
 Outside it: `%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup\WallSwap.lnk`, only when the user turns on
 Start with Windows (INV-16).
 
+## The packaged exe
+
+`WallSwap.spec` builds a windowed onedir app with PyInstaller: `dist\WallSwap\WallSwap.exe` plus `_internal\`
+(Python, the icon, customtkinter's themes, the `winrt` bindings). Frozen, `FROZEN` is true, `ICON_PATH` resolves
+under `sys._MEIPASS`, logging skips the console handler (`sys.stderr` is `None`), and the Startup shortcut targets
+the exe itself with no arguments.
+
 ## One wallpaper change, end to end
 
 1. Timer or menu → `_change_wallpaper` takes `change_lock` (or drops the request).
@@ -59,5 +66,5 @@ Start with Windows (INV-16).
 ## Dependencies
 
 Runtime: `pystray`, `Pillow`, `requests`, `customtkinter` (pulls in `darkdetect`, `packaging`); `winrt-*` on Windows
-only (lock screen). Dev: `ruff`, `pytest`. External services: `wallhaven.cc` API, Met collection API
+only (lock screen). Dev: `ruff`, `pytest`, `pyinstaller`. External services: `wallhaven.cc` API, Met collection API
 (`collectionapi.metmuseum.org`). No API keys.
