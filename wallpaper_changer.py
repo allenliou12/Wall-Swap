@@ -54,6 +54,7 @@ except ImportError:
     sys.exit(1)
 
 # ─── Configuration ────────────────────────────────────────────
+APP_VERSION = "1.0.1"  # keep equal to pyproject.toml's version (a test checks); shown in the tray, window and log
 # A PyInstaller build sets sys.frozen; its bundled files (the icon) unpack to sys._MEIPASS, not next to this file
 FROZEN = getattr(sys, "frozen", False)
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -1532,6 +1533,7 @@ class WallSwapApp:
             icon_path=ICON_PATH,
             on_closed=closed,
             game_name_max=MAX_GAME_NAME_LENGTH,
+            version=APP_VERSION,
         )
         self.settings_window = self.settings_ui.SettingsWindow(self.root, deps)
 
@@ -1646,6 +1648,8 @@ class WallSwapApp:
     def build_menu(self) -> pystray.Menu:
         has_current = lambda item: self.current is not None  # noqa: E731
         return pystray.Menu(
+            pystray.MenuItem(f"WallSwap {APP_VERSION}", None, enabled=False),
+            pystray.Menu.SEPARATOR,
             pystray.MenuItem("🔄 Next Wallpaper", self.next_wallpaper, default=True),
             pystray.MenuItem("⭐ Favourite", self.save_favourite, enabled=has_current),
             pystray.MenuItem("🔗 Details", self.open_source, enabled=has_current),
@@ -1671,7 +1675,7 @@ class WallSwapApp:
     def run(self):
         """Start the system tray application."""
         log.info("=" * 50)
-        log.info("WallSwap starting up!")
+        log.info(f"WallSwap {APP_VERSION} starting up!")
         log.info(f"Wallpaper folder: {WALLPAPER_DIR}")
         log.info(f"Interval: {settings.interval_seconds // 60} minutes")
         log.info(f"Min resolution: {MIN_WIDTH}x{MIN_HEIGHT}")
@@ -1698,7 +1702,7 @@ class WallSwapApp:
         self.icon = pystray.Icon(
             "WallSwap",
             self.create_tray_icon(),
-            "WallSwap - Fresh Wallpapers",
+            f"WallSwap {APP_VERSION}",
             self.build_menu(),
         )
         # The tray runs its own thread; _on_tray_ready shows it and starts the timer once it is up

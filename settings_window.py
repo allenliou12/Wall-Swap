@@ -36,6 +36,7 @@ class WindowDeps:
     icon_path: Path
     on_closed: Callable[[], None]
     game_name_max: int
+    version: str = ""                                 # shown in the title bar
 
 
 def _interval_label(minutes: int) -> str:
@@ -216,7 +217,7 @@ class SettingsWindow(ctk.CTkToplevel):
         self.deps = deps
         self._snapshot = deps.snapshot
         self._closed = False
-        self.title("WallSwap Settings")
+        self.title(f"WallSwap {deps.version} Settings" if deps.version else "WallSwap Settings")
         self.geometry("640x720")
         self.minsize(520, 480)
         self._set_icon()
@@ -314,7 +315,9 @@ class SettingsWindow(ctk.CTkToplevel):
     def _build_footer(self):
         footer = ctk.CTkFrame(self, fg_color="transparent")
         footer.pack(fill="x", padx=12, pady=12)
-        self._banner = ctk.CTkLabel(footer, text="", text_color=ERROR_COLOR, anchor="w", justify="left",
+        if self.deps.version:
+            ctk.CTkLabel(footer, text=f"WallSwap {self.deps.version}", text_color=HINT_COLOR).pack(side="left", padx=(0, 12))
+        self._banner =ctk.CTkLabel(footer, text="", text_color=ERROR_COLOR, anchor="w", justify="left",
                                     wraplength=380)
         self._banner.pack(side="left", fill="x", expand=True)
         self._save_button = ctk.CTkButton(footer, text="Save", width=90, command=self._on_save)

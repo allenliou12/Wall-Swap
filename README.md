@@ -66,6 +66,7 @@ Save applies from the next wallpaper change. Cancel throws away what you changed
 
 Double-click the icon to skip to the next wallpaper. Right-click for:
 
+- the WallSwap version, at the top (also in the settings window and in Settings → Apps)
 - Next Wallpaper
 - Favourite: copies the current one to `Pictures\WallSwap\Favourites`
 - Details: opens the wallpaper's Wallhaven/Met page, or shows the file if it's a local one

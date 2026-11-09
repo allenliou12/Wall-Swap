@@ -4,6 +4,29 @@
 # onedir, not onefile: a onefile exe unpacks itself to %TEMP% on every start, which is slower for a tray app that
 # runs all day, leaves stray _MEI folders when Windows kills it at shutdown, and trips antivirus heuristics more often.
 from PyInstaller.utils.hooks import collect_data_files, collect_submodules
+import tomllib
+from pathlib import Path
+
+from PyInstaller.utils.win32.versioninfo import (FixedFileInfo, StringFileInfo, StringStruct, StringTable,
+                                                 VarFileInfo, VarStruct, VSVersionInfo)
+
+# The version in pyproject.toml, so Properties > Details on WallSwap.exe shows the same number as the app
+VERSION = tomllib.loads(Path(SPECPATH, "pyproject.toml").read_text(encoding="utf-8"))["project"]["version"]
+_numbers = tuple(int(n) for n in (VERSION.split(".") + ["0"] * 4)[:4])
+version_info = VSVersionInfo(
+    ffi=FixedFileInfo(filevers=_numbers, prodvers=_numbers),
+    kids=[
+        StringFileInfo([StringTable("040904B0", [
+            StringStruct("ProductName", "WallSwap"),
+            StringStruct("FileDescription", "WallSwap"),
+            StringStruct("FileVersion", VERSION),
+            StringStruct("ProductVersion", VERSION),
+            StringStruct("OriginalFilename", "WallSwap.exe"),
+            StringStruct("LegalCopyright", "Copyright (c) 2026 Liou Jun Yi. MIT licence."),
+        ])]),
+        VarFileInfo([VarStruct("Translation", [1033, 1200])]),
+    ],
+)
 
 datas = [
     ("wallswap.ico", "."),  # the tray icon and the settings window's icon (ICON_PATH, under sys._MEIPASS)
@@ -37,6 +60,7 @@ exe = EXE(
     exclude_binaries=True,
     name="WallSwap",
     icon="wallswap.ico",
+    version=version_info,
     console=False,  # windowed: no console window; sys.stdout/sys.stderr are None
     upx=False,
 )
