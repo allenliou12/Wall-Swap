@@ -25,9 +25,11 @@ import subprocess
 import sys
 import threading
 import time
+import warnings
 import webbrowser
 from datetime import datetime
 from pathlib import Path
+from urllib.parse import urljoin, urlsplit
 
 try:
     import pystray
@@ -65,6 +67,14 @@ USER_AGENT = "WallSwap/1.0 (Windows Desktop Wallpaper Changer)"
 # results are often low-rated). Not applied to the favourite-game searches: few game
 # wallpapers exist and most have only a handful of favourites.
 WALLHAVEN_MIN_FAVORITES = 30
+
+# Download safety limits: only fetch over https from these sites (and their subdomains),
+# cap how much a single response may send, and give up on downloads that drag on
+ALLOWED_HOSTS = ("wallhaven.cc", "metmuseum.org")
+MAX_DOWNLOAD_BYTES = 50 * 1024 * 1024   # images
+MAX_API_BYTES = 5 * 1024 * 1024         # JSON responses
+DOWNLOAD_DEADLINE = 120                 # seconds per request, in total
+MAX_IMAGE_PIXELS = 64_000_000           # ~8000x8000; a 4K wallpaper is ~8 million pixels
 
 # User settings live in SETTINGS_FILE (created from these defaults on first run) and can be
 # changed from the tray menu or by editing the file.
@@ -279,6 +289,11 @@ WALLHAVEN_QUERIES = [
 
 # ─── Setup ────────────────────────────────────────────────────
 WALLPAPER_DIR.mkdir(parents=True, exist_ok=True)
+
+# Refuse huge images outright instead of only warning: decoding a giant scan could use
+# gigabytes of memory. Image.open then raises, and the image is skipped.
+Image.MAX_IMAGE_PIXELS = MAX_IMAGE_PIXELS
+warnings.simplefilter("error", Image.DecompressionBombWarning)
 
 from logging.handlers import RotatingFileHandler
 
@@ -499,6 +514,59 @@ def fits_screen(w: int, h: int, min_ratio: float = 1.0, max_ratio: float = float
     return not check_size or (w >= MIN_WIDTH and h >= MIN_HEIGHT)
 
 
+# ─── Safe downloads ───────────────────────────────────────────
+class DownloadError(requests.RequestException):
+    """A download refused by the safety limits (wrong site, too big, too slow)."""
+
+
+@dataclasses.dataclass
+class Fetched:
+    """A fully read, size-checked HTTP response."""
+    status_code: int
+    content: bytes
+
+    def json(self):
+        return json.loads(self.content)
+
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            raise requests.HTTPError(f"HTTP {self.status_code}")
+
+
+def _check_url(url: str):
+    host = (urlsplit(url).hostname or "").lower()
+    allowed = any(host == h or host.endswith("." + h) for h in ALLOWED_HOSTS)
+    if urlsplit(url).scheme != "https" or not allowed:
+        raise DownloadError(f"Refusing to fetch {url!r}: not an https Wallhaven/Met address")
+
+
+def safe_get(url: str, *, params: dict | None = None, timeout: int = 15,
+             max_bytes: int = MAX_DOWNLOAD_BYTES) -> Fetched:
+    """GET that only talks to ALLOWED_HOSTS over https (redirects included), stops past
+    max_bytes, and gives up after DOWNLOAD_DEADLINE seconds in total."""
+    deadline = time.monotonic() + DOWNLOAD_DEADLINE
+    for _ in range(4):  # the request plus at most 3 redirects, each one checked
+        _check_url(url)
+        with requests.get(url, params=params, headers={"User-Agent": USER_AGENT},
+                          timeout=timeout, stream=True, allow_redirects=False) as resp:
+            if resp.is_redirect:
+                url, params = urljoin(resp.url, resp.headers["Location"]), None
+                continue
+            length = resp.headers.get("Content-Length", "")
+            if length.isdigit() and int(length) > max_bytes:
+                raise DownloadError(f"{url} is too large ({int(length) // 1_000_000} MB)")
+            chunks, total = [], 0
+            for chunk in resp.iter_content(64 * 1024):
+                total += len(chunk)
+                if total > max_bytes:
+                    raise DownloadError(f"{url} is too large (over {max_bytes // 1_000_000} MB)")
+                if time.monotonic() > deadline:
+                    raise DownloadError(f"{url} took longer than {DOWNLOAD_DEADLINE}s")
+                chunks.append(chunk)
+            return Fetched(resp.status_code, b"".join(chunks))
+    raise DownloadError(f"Too many redirects for {url}")
+
+
 # ─── Sources ──────────────────────────────────────────────────
 def fetch_from_wallhaven(queries: list[str] | None = None, sorting: str | None = None,
                          source: str = "wallhaven") -> Wallpaper | None:
@@ -526,12 +594,8 @@ def fetch_from_wallhaven(queries: list[str] | None = None, sorting: str | None =
 
     try:
         log.info(f"Trying Wallhaven: query='{query}', sorting={sorting}")
-        resp = requests.get(
-            "https://wallhaven.cc/api/v1/search",
-            params=params,
-            headers={"User-Agent": USER_AGENT},
-            timeout=15,
-        )
+        resp = safe_get("https://wallhaven.cc/api/v1/search", params=params,
+                        max_bytes=MAX_API_BYTES)
         if resp.status_code != 200:
             log.warning(f"Wallhaven returned {resp.status_code}")
             return None
@@ -561,11 +625,7 @@ def fetch_from_wallhaven(queries: list[str] | None = None, sorting: str | None =
                 continue
 
             try:
-                img_resp = requests.get(
-                    wp_url,
-                    headers={"User-Agent": USER_AGENT},
-                    timeout=20,
-                )
+                img_resp = safe_get(wp_url, timeout=20)
             except requests.RequestException as e:
                 log.warning(f"Wallhaven download failed for {wp_id}: {e}")
                 continue  # try the next result instead of giving up on this search
@@ -588,12 +648,9 @@ def fetch_from_museum() -> Wallpaper | None:
         log.info(f"Trying the Met: query='{query}'")
         object_ids = []
         for dept in MUSEUM_DEPARTMENTS:
-            resp = requests.get(
-                f"{MUSEUM_API}/v1.1/search",
-                params={"q": query, "hasImages": "true", "limit": 100, **dept},
-                headers={"User-Agent": USER_AGENT},
-                timeout=15,
-            )
+            resp = safe_get(f"{MUSEUM_API}/v1.1/search",
+                            params={"q": query, "hasImages": "true", "limit": 100, **dept},
+                            max_bytes=MAX_API_BYTES)
             if resp.status_code == 200:
                 object_ids += resp.json().get("objectIDs") or []
             else:
@@ -629,9 +686,9 @@ def fetch_from_museum() -> Wallpaper | None:
     return None
 
 
-def _museum_get(url: str, timeout: int) -> requests.Response | None:
+def _museum_get(url: str, timeout: int, max_bytes: int = MAX_DOWNLOAD_BYTES) -> Fetched | None:
     """GET from the Met: None for 404 (gone for good), an exception for other failures."""
-    resp = requests.get(url, headers={"User-Agent": USER_AGENT}, timeout=timeout)
+    resp = safe_get(url, timeout=timeout, max_bytes=max_bytes)
     if resp.status_code == 404:
         return None
     resp.raise_for_status()  # 429/5xx are temporary: don't mark the painting as seen
@@ -640,7 +697,7 @@ def _museum_get(url: str, timeout: int) -> requests.Response | None:
 
 def _try_museum_object(obj_id: int) -> Wallpaper | None:
     """Download one Met object if it's a public-domain painting that fits a wide screen."""
-    obj_resp = _museum_get(f"{MUSEUM_API}/v1/objects/{obj_id}", timeout=15)
+    obj_resp = _museum_get(f"{MUSEUM_API}/v1/objects/{obj_id}", timeout=15, max_bytes=MAX_API_BYTES)
     if not obj_resp:
         return None
     obj = obj_resp.json()
@@ -678,7 +735,13 @@ def _try_museum_object(obj_id: int) -> Wallpaper | None:
 def is_landscape_wallpaper(image_path: Path) -> bool:
     """Check a local image is 1440p+ and landscape."""
     try:
-        with Image.open(image_path) as img:
+        # Your own files are only measured here, not decoded (Windows draws them), so the
+        # pixel limit for downloads doesn't apply. Opening still refuses truly absurd ones
+        # (over twice the limit).
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", Image.DecompressionBombWarning)
+            img = Image.open(image_path)
+        with img:
             return fits_screen(*img.size)
     except Exception as e:
         log.warning(f"Can't read image {image_path}: {e}")
