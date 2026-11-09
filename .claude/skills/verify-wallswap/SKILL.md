@@ -37,6 +37,12 @@ Each flow: what it is, how to reach it, the end state that proves it.
   it, and `wallswap.log` shows "WallSwap starting up!" then "Wallpaper set:".
 - **Next wallpaper.** Double-click the icon, or right-click → Next Wallpaper. Proof: the desktop changes, the lock
   screen (Win+L) shows the same image if it is set to "Picture", the tooltip updates.
+- **Fullscreen check, automated (INV-14).** Run first; it needs no game: `uv run pytest tests/test_fullscreen_windows.py
+  -v` on an unlocked desktop, without touching the mouse or keyboard while it runs. It opens real test windows
+  (fullscreen, borderless, maximized, ordinary, second monitor) and checks WallSwap's answer for each. PASSED = rule
+  holds; SKIPPED = Windows refused the setup (the reason names what), not a verdict; FAILED = the rule is wrong for
+  that window. `test_maximized_then_fullscreen` reports XPASS (handled) or XFAIL (the parked "maximized-then-fullscreen"
+  residual is real).
 - **Fullscreen skip (INV-14).** Set the interval to 15 min, start a fullscreen game or a fullscreen video, and stay
   in it past the next timer tick. Use the timer, not Next Wallpaper: opening the tray menu takes focus off the game,
   so a manual click never shows the skip. Proof: `wallswap.log` shows "Fullscreen app detected, skipping wallpaper
