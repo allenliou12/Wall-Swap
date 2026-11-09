@@ -54,6 +54,12 @@ Start with Windows (INV-16).
 under `sys._MEIPASS`, logging skips the console handler (`sys.stderr` is `None`), and the Startup shortcut targets
 the exe itself with no arguments.
 
+`installer\WallSwap.iss` (Inno Setup) wraps that folder into `dist\WallSwap-Setup.exe`: per-user, no admin, into
+`%LOCALAPPDATA%\Programs\WallSwap`, fixed `AppId` so a newer version upgrades in place. `AppMutex` matches the app's
+single-instance mutex, so Setup and the uninstaller ask the user to quit a running WallSwap first. The installer never creates
+`Startup\WallSwap.lnk`; the uninstaller deletes it and never touches `Pictures\WallSwap`. `build.ps1` builds the exe,
+the portable zip and the installer.
+
 ## One wallpaper change, end to end
 
 1. Timer or menu → `_change_wallpaper` takes `change_lock` (or drops the request).

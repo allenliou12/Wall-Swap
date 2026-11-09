@@ -11,11 +11,14 @@ Everything is 2560x1440 or bigger and landscape. It doesn't repeat images, and i
 
 ## Installing it
 
-Windows 10/11, no Python needed. Download the WallSwap zip from the Releases page, unzip it somewhere that will stay put (for example `Documents\WallSwap`), and run `WallSwap.exe`. Keep the `_internal` folder next to it.
+Windows 10/11, no Python needed. Both downloads are on the Releases page.
 
-The exe isn't code-signed, so the first time you run it Windows SmartScreen may say "Windows protected your PC". Click **More info**, then **Run anyway**. If you'd rather not, run it from source as shown below.
+- **Installer (recommended):** run `WallSwap-Setup.exe`. It installs just for you (no admin prompt) into `AppData\Local\Programs\WallSwap`, adds WallSwap to the Start menu, and can add a desktop shortcut. Uninstall it from Settings → Apps like anything else. Installing a newer version over it upgrades in place.
+- **Portable zip:** unzip `WallSwap-<version>.zip` somewhere that will stay put (for example `Documents\WallSwap`) and run `WallSwap.exe`. Keep the `_internal` folder next to it.
 
-If you turn on Start with Windows, the shortcut points at that `WallSwap.exe`; if you move the folder later, turn the switch off and on again.
+Neither is code-signed, so Windows SmartScreen may say "Windows protected your PC" the first time. Click **More info**, then **Run anyway**. If you'd rather not, run it from source as shown below.
+
+Start with Windows is the switch in the settings window; the installer doesn't turn it on. Its shortcut points at wherever `WallSwap.exe` is, so if you move the portable folder, turn the switch off and on again. Uninstalling removes that shortcut too, but never touches `Pictures\WallSwap` (your settings, favourites and downloads); delete that folder yourself if you want them gone.
 
 ## Running it from source
 
@@ -35,14 +38,14 @@ python wallpaper_changer.py
 
 The `winrt` packages are only for the lock screen; without them it just does the desktop.
 
-To build the exe yourself:
+To build the exe, the zip and the installer yourself (the installer needs [Inno Setup 6](https://jrsoftware.org/isinfo.php): `winget install --id JRSoftware.InnoSetup -e --scope user`):
 
 ```
 uv sync
-uv run pyinstaller --noconfirm WallSwap.spec
+powershell -ExecutionPolicy Bypass -File build.ps1
 ```
 
-That makes `dist\WallSwap\WallSwap.exe`; zip the whole `dist\WallSwap` folder to share it.
+That makes `dist\WallSwap\WallSwap.exe`, `dist\WallSwap-<version>.zip` and `dist\WallSwap-Setup.exe`. For just the exe, run `uv run pyinstaller --noconfirm WallSwap.spec`.
 
 The first time it runs, the settings window opens so you can pick what you want. The first wallpaper changes straight away with the starter mix while you look around.
 
