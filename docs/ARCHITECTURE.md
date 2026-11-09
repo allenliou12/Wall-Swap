@@ -1,7 +1,7 @@
 # WallSwap — Architecture (one page)
 
-> **Status:** reference-canon (as-built). Verified against `wallpaper_changer.py` and `settings_window.py` on
-> 2026-11-09. Update when a section, thread, file on disk or new module appears (`.claude/rules/wiki-lifecycle.md`).
+> How the code is built today. Checked against `wallpaper_changer.py` and `settings_window.py` on 2026-11-09.
+> Update it when a section, thread, file on disk or new module appears.
 
 ## The parts
 
@@ -23,7 +23,7 @@ Two files. `wallpaper_changer.py` holds everything but the window, split by `# �
 | Entry point | `:1640-1650` | `windows` | single-instance mutex, start |
 
 `settings_window.py` is the CustomTkinter settings window (`SettingsWindow`, `TagList`, `FolderList`). It never
-imports `wallpaper_changer` (D8): `WallSwapApp._show_settings` hands it a `WindowDeps` with a settings snapshot and
+imports `wallpaper_changer`: `WallSwapApp._show_settings` hands it a `WindowDeps` with a settings snapshot and
 the functions it needs. Both `customtkinter` and `settings_window` are imported lazily in `run()`.
 
 ## Threads
@@ -52,7 +52,7 @@ Start with Windows (INV-16).
 1. Timer or menu → `_change_wallpaper` takes `change_lock` (or drops the request).
 2. `_do_change_wallpaper`: skip if a fullscreen app is in front; `settings.reload()` picks up hand edits.
 3. `get_new_wallpaper`: one `snapshot()`; weighted pick from `source_weights` (off, empty and 0% sources dropped),
-   then fall back to general Wallhaven, then local, but only to sources that have a share (D7).
+   then fall back to general Wallhaven, then local, but only to sources that have a share.
 4. Online sources run through `download_wallpaper`: fetch → re-save as JPEG → delete the temp file → cleanup.
 5. `set_wallpaper` (user32) and `set_lock_screen` (WinRT); update `current`, tooltip and menu.
 

@@ -1,8 +1,8 @@
 # WallSwap — Invariants and hazards
 
-> **Status:** standard-canon, **declared conflict winner**. Every change keeps these rules; a plan that breaks one is
-> rejected, not scored (`/feature` step 3). Each rule names the code that holds it today. Verified against
-> `wallpaper_changer.py` on 2026-11-09 (after the settings window). Rewrite in place when a rule changes (`.claude/rules/doc-lifecycle.md`).
+> Rules every change keeps, and traps that have bitten before. Each rule names the code that holds it today.
+> Checked against `wallpaper_changer.py` on 2026-11-09 (after the settings window). Rewrite a rule in place when it
+> changes.
 
 ## Invariants
 
@@ -62,7 +62,7 @@ IDs are stable: never renumber, retire with a note.
   `_do_change_wallpaper` `:1267`, `is_fullscreen_app_running` `:598`. "Fullscreen" = the foreground window covers
   the whole monitor it is on (any monitor), is not the desktop, and is not an ordinary maximized window (maximized
   *with* a full title bar). Mac-tested with a faked user32 (`tests/test_fullscreen.py`); real Windows behaviour is
-  the verify-wallswap "Fullscreen skip" flow.
+  checked by hand on a Windows PC.
 - **INV-15 · Turned-off, empty and 0% sources are never used,** including as a fallback. A source with nothing to
   use (no ticked topic with searches, no folders, no game searches or game folders) or with weight 0 gets no share;
   the percentages the settings window shows are the real shares. An empty search list never falls back to other
@@ -79,7 +79,7 @@ Trigger → hidden failure → prevention → where it was verified.
 - **HZ-1 · A function-level `import ctypes.wintypes` hides the module's `ctypes`.** Python then treats `ctypes` as a
   local name for the whole function, so the first `ctypes.windll` line raises `UnboundLocalError`; the blanket
   `except` turns that into "no fullscreen app", so INV-14 never holds. Prevention: import submodules at the top of the
-  file or as `from ctypes import wintypes`; ruff rule F823 (in the gate) catches it. Verified 2026-11-09:
+  file or as `from ctypes import wintypes`; ruff rule F823 (`uv run ruff check .`) catches it. Verified 2026-11-09:
   `ruff check` F823 at `wallpaper_changer.py:479`, and a reproduction raised `UnboundLocalError`. Closed 2026-11-09:
   the import moved to the top of the file; `tests/test_fullscreen.py` fails if it comes back.
 - **HZ-2 · Blanket `except Exception` around Windows calls turns bugs into silent "no".** `is_fullscreen_app_running`,
