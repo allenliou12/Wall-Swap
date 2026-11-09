@@ -11,7 +11,7 @@ Everything is 2560x1440 or bigger and landscape. It doesn't repeat images, and i
 
 ## Installing it
 
-Windows 10/11, no Python needed. Both downloads are on the Releases page.
+Windows 10/11, no Python needed. Both downloads are on the [Releases page](https://github.com/allenliou12/Wall-Swap/releases/latest).
 
 - **Installer (recommended):** run `WallSwap-Setup.exe`. It installs just for you (no admin prompt) into `AppData\Local\Programs\WallSwap`, and adds WallSwap to the Start menu. Two boxes, both ticked to start with, add a desktop shortcut and start WallSwap when you sign in (the same as the Start with Windows switch, which you can turn off later). Uninstall it from Settings → Apps like anything else. Installing a newer version over it upgrades in place.
 - **Portable zip:** unzip `WallSwap-<version>.zip` somewhere that will stay put (for example `Documents\WallSwap`) and run `WallSwap.exe`. Keep the `_internal` folder next to it.
@@ -107,6 +107,10 @@ If you're upgrading from the version before the settings window, your old file i
 Downloads go to `Pictures\WallSwap` and only the newest 50 are kept, so use Favourite for anything you want to hold on to. Your own folders are never touched. The log (`wallswap.log`) is in the same place if something isn't working.
 
 If the lock screen doesn't change, check that it's set to "Picture" rather than Spotlight in Windows settings.
+
+## Licence
+
+MIT; see [LICENSE](LICENSE). Bundled third-party parts keep their own licences, listed in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 
 ## Credits
 

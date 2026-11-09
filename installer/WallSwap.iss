@@ -1,6 +1,6 @@
 ; Inno Setup script for WallSwap-Setup.exe. It wraps the PyInstaller folder dist\WallSwap (build that first).
 ; Build both with:  powershell -ExecutionPolicy Bypass -File build.ps1
-; or just this:     ISCC.exe /DAppVersion=0.1.0 installer\WallSwap.iss
+; or just this:     ISCC.exe /DAppVersion=1.0.0 installer\WallSwap.iss
 ;
 ; Per-user install, no admin prompt. Two ticked-by-default boxes: a desktop shortcut, and "Start WallSwap when I sign
 ; in", which writes the very shortcut the app's own Start with Windows switch manages (same file, same target), so
@@ -8,7 +8,7 @@
 ; both shortcuts and the Start menu entry; Pictures\WallSwap (settings, favourites, downloads) is never touched.
 
 #ifndef AppVersion
-  #define AppVersion "0.1.0"
+  #define AppVersion "1.0.0"
 #endif
 
 [Setup]
