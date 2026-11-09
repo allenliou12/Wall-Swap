@@ -12,6 +12,8 @@ from pathlib import Path
 _home = tempfile.mkdtemp(prefix="wallswap-test-home-")
 os.environ["HOME"] = _home
 os.environ["USERPROFILE"] = _home  # Path.home() on Windows
+_appdata = tempfile.mkdtemp(prefix="wallswap-test-appdata-")
+os.environ["APPDATA"] = _appdata  # the Startup shortcut lives under APPDATA (INV-16)
 
 sys.modules.setdefault("pystray", types.SimpleNamespace(MenuItem=object, Menu=object, Icon=object))
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -19,3 +21,4 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import wallpaper_changer  # noqa: E402,F401  (import after HOME is redirected)
 
 assert str(wallpaper_changer.WALLPAPER_DIR).startswith(_home), "tests must never touch the real home folder"
+assert str(wallpaper_changer.startup_shortcut_path()).startswith(_appdata), "tests must never touch the real Startup folder"

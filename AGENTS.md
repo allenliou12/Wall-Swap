@@ -55,12 +55,14 @@ adds project context. `CLAUDE.md` only imports this file.
 ## What this is
 
 > **A Windows tray app that swaps the desktop and lock-screen wallpaper on a timer.** Sources: Wallhaven searches,
-> one favourite game's Wallhaven searches, public-domain Met paintings and the user's own folders. One Python file
-> (`wallpaper_changer.py`), no API keys, settings in `Pictures\WallSwap\settings.json`. Runs only on Windows; the
+> one favourite game's Wallhaven searches, public-domain Met paintings and the user's own folders. The app is
+> `wallpaper_changer.py` plus the settings window in `settings_window.py`; no API keys, settings in
+> `Pictures\WallSwap\settings.json`. Runs only on Windows; the
 > development machine is a Mac, so logic is tested on the Mac with Windows calls stubbed, and the real app is checked
 > on a Windows PC with `.claude/skills/verify-wallswap/SKILL.md`.
 
-**Component roles** (baton `<app>` tags — roles, not directories; all live in `wallpaper_changer.py` today):
+**Component roles** (baton `<app>` tags — roles, not directories; all in `wallpaper_changer.py` except the
+settings window, `settings_window.py`, which is `app`):
 
 | Role | Owns |
 |---|---|

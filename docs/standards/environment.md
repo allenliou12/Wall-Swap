@@ -52,6 +52,8 @@
   `diffRef: <snapshot>`; a fold's snapshot is a child of the pre-fold snapshot, so `/adversarial-review` with
   `foldRescan: true, diffRef: <pre-fold>, diffHead: <fold>` sees only the fold. `git diff <snapshot>` shows untracked
   files as deleted — scope it to paths. Committing each slice before the next starts avoids all of this.
+- **`codex-lane.sh status` needs `pgrep`, which Git Bash on Windows doesn't have**: launch still works; check a
+  lane by the exit code and final report files in its `.scratch/codex-lanes/<slice>` folder instead.
 - **One file, many slices**: almost every code slice edits `wallpaper_changer.py`. Two lanes may still share a wave
   when they edit different functions; land them with `git apply --3way` and re-run the gate on the landed tree.
 

@@ -27,7 +27,8 @@ uv run wallpaper_changer.py
 ```
 
 Close any running WallSwap first (tray → Quit): a second copy exits on start (single-instance mutex).
-For a clean run, rename `Pictures\WallSwap\settings.json` first and restore it after.
+For a clean run, rename `Pictures\WallSwap\settings.json` first and restore it after; with no settings file the
+settings window opens by itself (first run).
 
 ## Flows
 
@@ -54,6 +55,15 @@ Each flow: what it is, how to reach it, the end state that proves it.
   `"interval_minutes": 15`.
 - **Sources.** Turn every source but one off. Proof: the next few wallpapers all come from that source (tooltip /
   Details), and `settings.json` shows the toggles.
+- **Settings window.** Right-click → Settings…; click it again. Proof: one window comes to the front (no second
+  copy). Untick a topic, add a search, move a slider (the % labels change), Save: a "Settings saved" notification,
+  `settings.json` shows only those changes, and the next wallpaper's logged query comes from a ticked topic. Edit
+  something and press Cancel: "Discard your changes?" and nothing is written.
+- **Start with Windows.** In the window, turn it off and Save: `Startup\WallSwap.lnk` is gone. Turn it on and Save:
+  the shortcut exists, points at `.venv\Scripts\pythonw.exe` with the script as its argument and the WallSwap icon.
+  Sign out and in: WallSwap starts with no console window.
+- **Upgrade from the old settings file.** Quit the old WallSwap first. Start the new one. Proof: `settings.json.bak`
+  is the old file, `settings.json` now has `topics`, and the window shows the same game, folders and a 45/15/20/20 mix.
 - **My Folders.** Add a folder of 1440p+ landscape images; remove it again. Proof: it appears in the submenu and
   `local_folders`; with only Local on, its images are used; the folder's files are untouched (INV-8).
 - **Favourite.** Right-click → Favourite. Proof: a copy appears in `Pictures\WallSwap\Favourites`; doing it twice

@@ -2,11 +2,14 @@
 from __future__ import annotations
 
 import ctypes
+import os
+import subprocess
 import sys
 import time
 from collections.abc import Callable, Iterator
 from ctypes import wintypes
 from dataclasses import dataclass
+from pathlib import Path
 
 import pytest
 
@@ -286,3 +289,31 @@ def test_fullscreen_on_secondary_monitor(window: tk.Tk, user32: ctypes.WinDLL) -
                  lambda s: s.monitor == secondary and (s.style & WS_CAPTION) == 0
                  and _contains(s.rect, s.monitor_rect),
                  "fullscreen zoom/style/rectangle on the chosen non-primary monitor", True)
+
+
+_DPI_CHILD = "WALLSWAP_DPI_AWARE_CHILD"  # set for the child run, so it doesn't start another child
+_DPI_BOOTSTRAP = """
+import ctypes, sys
+ctypes.windll.shcore.SetProcessDpiAwareness(2)  # what the CustomTkinter root does to the running app
+awareness = ctypes.c_int()
+ctypes.windll.shcore.GetProcessDpiAwareness(None, ctypes.byref(awareness))
+if awareness.value != 2:
+    print(f"process DPI awareness is {awareness.value}, not per-monitor (2)")
+    sys.exit(3)
+import pytest
+sys.exit(pytest.main([sys.argv[1], "-q", "-rsxX", "-p", "no:cacheprovider", "-k", "not dpi_aware"]))
+"""
+
+
+@pytest.mark.skipif(os.environ.get(_DPI_CHILD) == "1", reason="already inside the DPI-aware child run")
+def test_checks_hold_in_a_dpi_aware_process() -> None:
+    # The app is per-monitor DPI-aware once its Tk root exists, and INV-14 must hold there too. Awareness is set
+    # once per process, so the checks above run again in a fresh process that sets it before any window exists.
+    result = subprocess.run([sys.executable, "-c", _DPI_BOOTSTRAP, str(Path(__file__).resolve())],
+                            cwd=Path(__file__).resolve().parent.parent, env={**os.environ, _DPI_CHILD: "1"},
+                            capture_output=True, text=True, timeout=300)
+    output = result.stdout + result.stderr
+    assert result.returncode == 0, output
+    if " passed" not in output:
+        pytest.skip(f"every check was skipped in the DPI-aware process:\n{output}")
+    print(output)

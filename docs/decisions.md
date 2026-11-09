@@ -12,3 +12,5 @@
 | D4 | [YOU] | RATIFIED 2026-11-09 | `winrt-*` dependencies install on Windows only, so the project installs on the Mac | `pyproject.toml` |
 | D6 | [YOU] | RATIFIED 2026-11-09 | Codex lanes run with `danger-full-access`: the restricted sandbox cannot use the uv cache, so it cannot run the gate; briefs still forbid commits, pushes, branch switches and edits outside the lane | `.claude/scripts/codex-lane.sh` |
 | D5 | [YOU] | RATIFIED 2026-11-09 | GitNexus indexes this repo as `WallSwap`; the AGENTS.md block is written once, re-index with `--skip-agents-md` | `.gitnexusrc`, `AGENTS.md` |
+| D7 | [PM] | RATIFIED 2026-11-09 | A source that is off, empty or at 0% is never used, not even as a fallback; the window's % is the real share | `docs/features/2026-11-09-settings-window.md` F2 |
+| D8 | [YOU] | RATIFIED 2026-11-09 | The settings window lives in `settings_window.py` and never imports `wallpaper_changer`; it gets its data and actions passed in | `docs/features/2026-11-09-settings-window.md` R3 |

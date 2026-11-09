@@ -2,7 +2,7 @@
 
 > **Status:** standard-canon, **declared conflict winner**. Every change keeps these rules; a plan that breaks one is
 > rejected, not scored (`/feature` step 3). Each rule names the code that holds it today. Verified against
-> `wallpaper_changer.py` on 2026-11-09. Rewrite in place when a rule changes (`.claude/rules/doc-lifecycle.md`).
+> `wallpaper_changer.py` on 2026-11-09 (after the settings window). Rewrite in place when a rule changes (`.claude/rules/doc-lifecycle.md`).
 
 ## Invariants
 
@@ -12,53 +12,65 @@ IDs are stable: never renumber, retire with a note.
 
 - **INV-1 · Only https, only the allowed sites.** Every network fetch goes through `safe_get`, which refuses any URL
   that is not https on `ALLOWED_HOSTS` or a subdomain, and re-checks every redirect hop (at most 3).
-  Code: `wallpaper_changer.py:74`, `_check_url` `:566`, `safe_get` `:573`. A new source adds its host to
+  Code: `wallpaper_changer.py:76`, `_check_url` `:810`, `safe_get` `:817`. A new source adds its host to
   `ALLOWED_HOSTS`, never a bare `requests.get`.
 - **INV-2 · Bounded downloads.** One response may send at most `MAX_DOWNLOAD_BYTES` (images) or `MAX_API_BYTES`
-  (JSON), and one request gives up after `DOWNLOAD_DEADLINE` seconds in total. Code: `:75-77`, `:585-596`.
+  (JSON), and one request gives up after `DOWNLOAD_DEADLINE` seconds in total. Code: `:77-79`, `:830-839`.
 - **INV-3 · Bounded image decoding.** Downloaded images over `MAX_IMAGE_PIXELS` raise instead of decoding (Pillow's
   bomb warning is an error). The user's own files are only measured, not decoded, so that limit is relaxed there.
-  Code: `:78`, `:296-297`, `is_landscape_wallpaper` `:765`.
+  Code: `:80`, `:243-244`, `is_landscape_wallpaper` `:1007`.
 - **INV-4 · Only real web pages are opened.** "Details" opens a link only if it starts with `https://`; anything else
-  falls back to showing the file. The link comes from API data. Code: `open_source` `:1011`.
+  falls back to showing the file. The link comes from API data. Code: `open_source` `:1314`.
 
 ### Content
 
 - **INV-5 · Safe for work.** Wallhaven searches ask for SFW only (`purity=100`) and general + anime categories, no
-  people (`categories=110`). Code: `fetch_from_wallhaven` `:613-615`.
+  people (`categories=110`). Code: `fetch_from_wallhaven` `:856-857`. Search text the user types only ever fills
+  `q`.
 - **INV-6 · Wallpaper-shaped images only.** Everything shown is landscape and at least `MIN_WIDTH` × `MIN_HEIGHT`
   (2560 × 1440); Met paintings also fall between `MUSEUM_MIN_RATIO` and `MUSEUM_MAX_RATIO`. Code: `fits_screen`
-  `:539`, `:62-63`, `:109-110`.
+  `:783`, `:64-65`, `:160-161`.
 - **INV-7 · Met paintings are public domain.** An object without `isPublicDomain` is never downloaded.
-  Code: `_try_museum_object` `:735`.
+  Code: `_try_museum_object` `:970`.
 
 ### The user's files
 
 - **INV-8 · The user's own folders are read-only.** Local and game folders are listed and measured, never written,
-  moved or deleted. Code: `pick_local_wallpaper` `:781`.
+  moved or deleted. Code: `pick_local_wallpaper` `:1023`. The settings window and the folder dialog only
+  choose folders and edit the lists.
 - **INV-9 · Cleanup only touches WallSwap's own downloads.** Only `wallswap_*.jpg` directly inside the WallSwap
   folder are deleted, newest `MAX_WALLPAPERS` (50) kept. Favourites live in a subfolder the non-recursive glob never
-  reaches. Code: `cleanup_old_wallpapers` `:429`, `:64`.
-- **INV-10 · A broken settings file is never overwritten.** A file that fails to parse keeps the previous settings,
-  and a tray change refuses to save over it. Saves go through a temp file, so a crash cannot leave half a file.
-  Unknown keys and wrong types fall back to defaults. Code: `_merge_settings` `:313`, `Settings.reload` `:341`,
-  `save` `:356`, `update` `:363`.
+  reaches. Code: `cleanup_old_wallpapers` `:526`, `:66`.
+- **INV-10 · A broken settings file is never overwritten.** A file that fails to parse, or parses to something that
+  is not a JSON object, keeps the previous settings in memory (the neutral defaults at startup), and no save writes
+  over it. Saves go through a temp file, so a crash cannot leave half a file; a save that can't be written returns
+  False and changes nothing. Unknown keys and wrong types fall back to defaults. A file from before the settings
+  window (no `topics`) is upgraded in memory on read and written only by a save, which first copies the original to
+  `settings.json.bak` (never overwritten; if the copy fails the save is refused). The settings window writes only
+  the settings it changed, under the same lock as tray changes. Code: `_merge_settings` `:260`, `Settings.reload`
+  `:370`, `save` `:400`, `update` `:449`, `persist_migration` `:469`.
 
 ### Behaviour
 
 - **INV-11 · No repeats until a source runs out.** Downloaded ids are remembered (newest `MAX_SEEN_IDS` = 5000);
-  local images cycle through every file before repeating. Code: `:403-426`, `pick_local_wallpaper` `:781`.
+  local images cycle through every file before repeating. Code: `:500-523`, `pick_local_wallpaper` `:1023`.
 - **INV-12 · A temporary failure never marks an image as seen.** Met 429/5xx and network errors skip the painting
-  for now; only a definite yes/no is recorded. Code: `_museum_get` `:719`, `fetch_from_museum` `:691-712`.
+  for now; only a definite yes/no is recorded. Code: `_museum_get` `:961`, `fetch_from_museum` `:933-954`.
 - **INV-13 · One wallpaper change at a time.** A change requested while one is running is dropped. Code:
-  `_change_wallpaper` `:954`.
+  `_change_wallpaper` `:1257`.
 - **INV-14 · No change while a fullscreen app (a game) is in front** — the change is skipped, not queued. Code:
-  `_do_change_wallpaper` `:965`, `is_fullscreen_app_running` `:501`. "Fullscreen" = the foreground window covers
+  `_do_change_wallpaper` `:1267`, `is_fullscreen_app_running` `:598`. "Fullscreen" = the foreground window covers
   the whole monitor it is on (any monitor), is not the desktop, and is not an ordinary maximized window (maximized
   *with* a full title bar). Mac-tested with a faked user32 (`tests/test_fullscreen.py`); real Windows behaviour is
   the verify-wallswap "Fullscreen skip" flow.
-- **INV-15 · Turned-off sources are never used,** including as a fallback. An emptied `game_queries` does not fall
-  back to general searches. Code: `source_weights` `:836`, `get_new_wallpaper` `:843`, `:606-607`.
+- **INV-15 · Turned-off, empty and 0% sources are never used,** including as a fallback. A source with nothing to
+  use (no ticked topic with searches, no folders, no game searches or game folders) or with weight 0 gets no share;
+  the percentages the settings window shows are the real shares. An empty search list never falls back to other
+  searches. Code: `source_available` `:1075`, `source_weights` `:1104`, `get_new_wallpaper` `:1140`, `:848`.
+- **INV-16 · Outside its own folder, WallSwap writes only `Startup\WallSwap.lnk`,** and only when the user flips
+  Start with Windows; that exact file is the only one it deletes there. The shortcut is written by an absolute-path
+  PowerShell (Windows folder from the OS), with paths passed only through environment variables. Code:
+  `startup_shortcut_path` `:716`, `write_shortcut` `:744`, `set_start_with_windows` `:771`.
 
 ## Hazards
 
@@ -74,5 +86,6 @@ Trigger → hidden failure → prevention → where it was verified.
   `set_lock_screen` and the fetchers log and carry on, so a broken rule looks like "nothing happened". Prevention: a
   test for each rule that checks the rule's yes case, not only the no case.
 - **HZ-3 · Importing the module touches the real home folder.** Import creates `~/Pictures/WallSwap`, writes
-  `settings.json` and opens `wallswap.log` (`:292`, `:301-308`, `:391`). Prevention: tests set `HOME` to a temp dir
-  before import (`tests/conftest.py`).
+  `settings.json` when it is missing (an old-format file is only upgraded in memory) and opens `wallswap.log`
+  (`:239`, `:248`, `:488`). Prevention: tests set `HOME`, `USERPROFILE` and
+  `APPDATA` to temp dirs before import (`tests/conftest.py`).

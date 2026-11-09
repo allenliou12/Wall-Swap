@@ -2,10 +2,10 @@
 
 Small Windows tray app that changes my wallpaper (and lock screen) every 30 minutes. I got tired of looking at the same background, so this pulls from a few places:
 
-- [Wallhaven](https://wallhaven.cc) searches: scenery, space, dark fantasy, games, anime. SFW only, and low-rated stuff is skipped.
-- Path of Exile wallpapers from Wallhaven (you can change the game)
+- [Wallhaven](https://wallhaven.cc) searches on topics you pick: scenery, space, cities, night skies, dark fantasy, games, anime and so on. SFW only, and low-rated stuff is skipped.
+- Wallpapers for a favourite game, if you set one (mine is Path of Exile)
 - Public-domain paintings from [the Met's open access API](https://metmuseum.github.io/)
-- My own folders of screenshots
+- Your own folders of screenshots or wallpapers
 
 Everything is 2560x1440 or bigger and landscape. It doesn't repeat images, and it won't change the wallpaper while a fullscreen game is running. No API keys needed.
 
@@ -21,13 +21,26 @@ uv run wallpaper_changer.py
 Or with pip:
 
 ```
-pip install pystray Pillow requests winrt-runtime winrt-windows-foundation winrt-windows-storage winrt-windows-system-userprofile
+pip install pystray Pillow requests customtkinter winrt-runtime winrt-windows-foundation winrt-windows-storage winrt-windows-system-userprofile
 python wallpaper_changer.py
 ```
 
 The `winrt` packages are only for the lock screen; without them it just does the desktop.
 
-To start it with Windows, rename it to `wallpaper_changer.pyw` (no console window) and put a shortcut in `shell:startup`.
+The first time it runs, the settings window opens so you can pick what you want. The first wallpaper changes straight away with the starter mix while you look around.
+
+## Settings window
+
+Right-click the tray icon and pick Settings… to open it again.
+
+- **Topics:** tick the ones you want. Click a topic's arrow to see its searches; click a search to remove it, or type your own and press Add. Only ticked topics are searched, and every search in them is equally likely.
+- **Favourite game:** a name and some Wallhaven searches for it. Leave it empty if you don't want one. There aren't many game wallpapers, so once they've all been shown, that share uses the game's folders instead.
+- **My folders:** add or remove your own image folders. Only images directly in a folder are used, not subfolders, and WallSwap never changes anything in them.
+- **Source mix:** one slider each for Wallhaven, Met paintings, your folders and your favourite game. The percentage next to each is its real share of changes. A source with nothing to use (no folders, no game searches, no ticked topics) or turned off drops out and says why.
+- **Change every:** 15 min, 30 min, 1 hour or 2 hours.
+- **Start with Windows:** puts a WallSwap shortcut in your Startup folder (or takes it out).
+
+Save applies from the next wallpaper change. Cancel throws away what you changed.
 
 ## Tray menu
 
@@ -37,24 +50,26 @@ Double-click the icon to skip to the next wallpaper. Right-click for:
 - Favourite: copies the current one to `Pictures\WallSwap\Favourites`
 - Details: opens the wallpaper's Wallhaven/Met page, or shows the file if it's a local one
 - Pause
-- Interval: 15 min, 30 min, 1 hour, 2 hours
-- Sources: turn each source on/off
-- My Folders: add or remove your own image folders
-- Settings: opens `settings.json` in Notepad
+- Interval, Sources, My Folders: quick versions of the same settings
+- Settings…: opens the settings window
 - WallSwap Folder
 - Quit
 
 Hovering the icon shows what the current wallpaper is.
 
-## Settings
+## settings.json
 
-Stored in `Pictures\WallSwap\settings.json`, created on first run. Hand edits apply on the next change. If you break the file it keeps the old settings; delete it to reset.
+The window saves to `Pictures\WallSwap\settings.json`. You can still edit it by hand; changes apply on the next wallpaper change. If you break the file it keeps the old settings and won't save over it; delete it to start again from the defaults.
 
 ```json
 {
   "interval_minutes": 30,
   "sources": {"wallhaven": true, "game": true, "museum": true, "local": true},
-  "chances": {"local": 0.2, "game": 0.2, "museum": 0.15},
+  "chances": {"wallhaven": 0.45, "museum": 0.15, "local": 0.2, "game": 0.2},
+  "topics": {
+    "nature": {"enabled": true, "searches": ["landscape 4k", "mountains", "forest", "ocean", "aurora borealis"]},
+    "...": "eight more topics: space, dark_fantasy, cities, abstract, moon_night, anime, games, movies"
+  },
   "game_name": "Path of Exile",
   "game_queries": ["path of exile", "path of exile 2"],
   "local_folders": ["C:\\Users\\<you>\\Pictures\\Path of Exile 2"],
@@ -62,11 +77,10 @@ Stored in `Pictures\WallSwap\settings.json`, created on first run. Hand edits ap
 }
 ```
 
-- `chances` is how often each source gets picked. Whatever's left over (0.45 here) goes to general Wallhaven searches.
-- `game_queries` are the Wallhaven searches for your game. There aren't many game wallpapers, so once they've all been shown, that share uses `game_folders` instead.
-- `local_folders` only uses images directly in the folder, not subfolders.
+- `chances` are weights, not percentages; they're compared with each other.
+- The nine topic names are fixed; their searches are yours to change.
 
-The search terms, minimum resolution, and the 30-favourite cutoff for Wallhaven are constants at the top of `wallpaper_changer.py`.
+If you're upgrading from the version before the settings window, your old file is copied to `settings.json.bak` the first time the new version saves, and your old searches, game and folders carry over.
 
 ## Files
 

@@ -19,6 +19,7 @@ import io
 import json
 import logging
 import os
+import queue
 import random
 import re
 import shutil
@@ -29,7 +30,8 @@ import time
 import warnings
 import webbrowser
 from datetime import datetime
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
+from tkinter import TclError, filedialog  # plain tkinter opens no window on import, so tests stay headless
 from urllib.parse import urljoin, urlsplit
 
 try:
@@ -77,12 +79,45 @@ MAX_API_BYTES = 5 * 1024 * 1024         # JSON responses
 DOWNLOAD_DEADLINE = 120                 # seconds per request, in total
 MAX_IMAGE_PIXELS = 64_000_000           # ~8000x8000; a 4K wallpaper is ~8 million pixels
 
+# Start with Windows: the one file WallSwap writes outside its own folder (INV-16)
+STARTUP_SHORTCUT_NAME = "WallSwap.lnk"
+# Hide the PowerShell console that writes the shortcut; the flag exists only on Windows, 0 elsewhere
+CREATE_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+MAX_WINDOWS_PATH = 260  # MAX_PATH: the Windows folder always fits; a longer answer is treated as no answer
+
 # User settings live in SETTINGS_FILE (created from these defaults on first run) and can be
-# changed from the tray menu or by editing the file.
-#   chances: share of changes for each source; whatever's left goes to general Wallhaven
-#   game_*:  a dedicated Wallhaven share for one favourite game
+# changed from the tray menu, the Settings window or by editing the file.
+#   chances: relative weight of each source (they need not add up to 1); a source that is
+#            turned off, at 0 or has nothing to use gets no share
+#   topics:  Wallhaven search groups; every search of a ticked topic is equally likely
+#   game_*:  a dedicated Wallhaven share for one favourite game. game_folders hold the game's
+#            images, used for its share once all of its Wallhaven wallpapers have been shown
+#            (so other folders can't dilute it)
 #   local_folders: your own image folders (top-level images only, not subfolders)
 DEFAULT_SETTINGS = {
+    "interval_minutes": 30,
+    "sources": {"wallhaven": True, "game": True, "museum": True, "local": True},
+    "chances": {"wallhaven": 0.45, "museum": 0.15, "local": 0.2, "game": 0.2},
+    "topics": {
+        "nature": {"enabled": True,
+                   "searches": ["landscape 4k", "mountains", "forest", "ocean", "aurora borealis"]},
+        "space": {"enabled": True, "searches": ["nebula", "galaxy", "milky way"]},
+        "dark_fantasy": {"enabled": False, "searches": ["dark fantasy", "gothic"]},
+        "cities": {"enabled": True, "searches": ["cityscape night", "neon city rain", "futuristic city"]},
+        "abstract": {"enabled": True, "searches": ["minimalist", "synthwave", "fractal art"]},
+        "moon_night": {"enabled": True, "searches": ["moon", "night sky", "starry night"]},
+        "anime": {"enabled": False, "searches": ["anime scenery rain", "studio ghibli"]},
+        "games": {"enabled": False, "searches": ["elden ring", "hollow knight"]},
+        "movies": {"enabled": False, "searches": ["blade runner", "dune"]},
+    },
+    "game_name": "",
+    "game_queries": [],
+    "local_folders": [],
+    "game_folders": [],
+}
+# DEFAULT_SETTINGS as it was before topics (ff92bfd), kept exactly: migrate_settings reads an old
+# settings.json through it, so the upgraded file holds the values the old app really used
+LEGACY_DEFAULTS = {
     "interval_minutes": 30,
     "sources": {"wallhaven": True, "game": True, "museum": True, "local": True},
     "chances": {"local": 0.2, "game": 0.2, "museum": 0.15},
@@ -93,7 +128,23 @@ DEFAULT_SETTINGS = {
     # Wallhaven wallpapers have been shown (so other folders can't dilute it)
     "game_folders": [str(Path.home() / "Pictures" / "Path of Exile 2")],
 }
+TOPIC_LABELS = {  # topic id -> label, in display order; the ids are fixed settings.json keys
+    "nature": "Nature & landscapes",
+    "space": "Space",
+    "dark_fantasy": "Dark fantasy & gothic",
+    "cities": "Cities & cyberpunk",
+    "abstract": "Abstract & minimal",
+    "moon_night": "Moon & night",
+    "anime": "Anime",
+    "games": "Games",
+    "movies": "Movies & series",
+}
+# Typed searches only ever fill Wallhaven's q; the cap keeps a pasted paragraph out of it
+MAX_SEARCH_LENGTH = 100
+# Long enough for any real game title, short enough to fit the tray menu label
+MAX_GAME_NAME_LENGTH = 60
 INTERVAL_CHOICES = [15, 30, 60, 120]  # minutes, offered in the tray menu
+UI_POLL_MS = 100  # how often the Tk thread runs calls queued from the tray; fast enough to feel instant, cheap when idle
 SOURCE_LABELS = {
     "wallhaven": "Wallhaven",
     "game": "Wallhaven (favourite game)",
@@ -134,159 +185,55 @@ MUSEUM_QUERIES = [
     "Hudson River School",
 ]
 
-# Wallhaven search queries for variety
-WALLHAVEN_QUERIES = [
-    # Scenery (all verified 10+ results at 2560x1440)
-    "landscape 4k",
-    "sunset clouds",
-    "aurora borealis",
-    "cherry blossom japan",
-    "milky way landscape",
-    "desert dunes",
-    "foggy mountains",
-    "tropical beach",
-    "mountains",
-    "ocean",
-    "forest",
-    "snow",
-    "rain",
-    "storm",
-    "clouds",
-    "sky",
-    "lake",
-    "river",
-    "island",
-    "cave",
-    "glacier",
-    "canyon",
-    # Urban / Street
-    "cityscape night",
-    "neon city rain",
-    "futuristic city",
-    "cyberpunk alley",
-    "cyberpunk city",
-    "neon lights",
-    "skyscraper",
-    "bridge night",
-    # Space / Cosmos
-    "nebula",
-    "sci-fi concept art",
-    "star wars",
-    "mass effect",
-    "space station",
-    "eclipse",
-    "space nebula",
-    "galaxy",
-    "milky way",
-    # Digital Art / Fantasy / Dark
-    "digital art fantasy",
-    "concept art environment",
-    "concept art dark",
-    "dragon fire",
-    "dark souls",
-    "witcher geralt",
-    "lord of the rings",
-    "pixel art landscape",
-    "cyberpunk girl",
-    "dark fantasy",
-    "dark castle",
-    "gothic",
-    "demon",
-    "skull",
-    "raven dark",
-    "dark art",
-    "void",
-    "dark",
-    "shadow",
-    "dark landscape",
-    "dark forest",
-    "dark ocean",
-    "dark mountain",
-    "witch",
-    "dark knight",
-    "reaper",
-    "dark angel",
-    "dark warrior",
-    "abyss",
-    "ancient ruins",
-    "dungeon",
-    "castle",
-    "ruins",
-    "temple",
-    "cathedral",
-    "lighthouse",
-    # Aesthetic / Abstract / Art
-    "synthwave",
-    "vaporwave",
-    "glitch art",
-    "fractal art",
-    "dark abstract",
-    "abstract dark",
-    "smoke dark",
-    "dark minimal",
-    "monochrome",
-    "noir",
-    "oil painting",
-    "watercolor",
-    "digital painting",
-    "surreal art",
-    "surrealism",
-    "minimalist",
-    # Moon / Night
-    "moon",
-    "moonlight",
-    "blood moon",
-    "full moon",
-    "crescent moon",
-    "lunar",
-    "night sky",
-    "starry night",
-    "dark sky",
-    # Anime / Manga
-    "anime scenery rain",
-    "demon slayer",
-    "jujutsu kaisen",
-    "chainsaw man",
-    "one piece",
-    "evangelion",
-    "evangelion unit",
-    "solo leveling",
-    "frieren",
-    "spy x family",
-    "studio ghibli",
-    "akira",
-    "bleach anime",
-    "naruto",
-    "dragon ball",
-    # Games
-    "elden ring",
-    "zelda breath of the wild",
-    "cyberpunk 2077 night city",
-    "ghost of tsushima",
-    "hollow knight",
-    "final fantasy",
-    "god of war",
-    "horizon zero dawn",
-    "red dead redemption 2",
-    "sekiro",
-    "hades game",
-    "nier automata",
-    "league of legends",
-    "the last of us",
-    "persona 5",
-    "genshin impact",
-    "resident evil",
-    "skyrim",
-    "fallout",
-    "cyber",
-    "hologram",
-    # Movies / Series
-    "blade runner",
-    "dune",
-    "arcane",
-    "batman",
-    "spider-verse",
-]
+# The searches of the old single Wallhaven list, grouped by topic (each exactly once). An
+# upgraded settings.json gets all of them, all ticked, so the old mix is unchanged.
+LEGACY_TOPIC_SEARCHES = {
+    "nature": [
+        "landscape 4k", "sunset clouds", "aurora borealis", "cherry blossom japan", "milky way landscape",
+        "desert dunes", "foggy mountains", "tropical beach", "mountains", "ocean", "forest", "snow", "rain",
+        "storm", "clouds", "sky", "lake", "river", "island", "cave", "glacier", "canyon", "lighthouse",
+    ],
+    "space": [
+        "nebula", "sci-fi concept art", "space station", "eclipse", "space nebula", "galaxy", "milky way",
+    ],
+    "dark_fantasy": [
+        "digital art fantasy", "concept art environment", "concept art dark", "dragon fire", "dark fantasy",
+        "dark castle", "gothic", "demon", "skull", "raven dark", "dark art", "void", "dark", "shadow",
+        "dark landscape", "dark forest", "dark ocean", "dark mountain", "witch", "dark knight", "reaper",
+        "dark angel", "dark warrior", "abyss", "ancient ruins", "dungeon", "castle", "ruins", "temple",
+        "cathedral",
+    ],
+    "cities": [
+        "cityscape night", "neon city rain", "futuristic city", "cyberpunk alley", "cyberpunk city",
+        "neon lights", "skyscraper", "bridge night", "cyberpunk girl", "cyber", "hologram",
+    ],
+    "abstract": [
+        "synthwave", "vaporwave", "glitch art", "fractal art", "dark abstract", "abstract dark", "smoke dark",
+        "dark minimal", "monochrome", "noir", "oil painting", "watercolor", "digital painting", "surreal art",
+        "surrealism", "minimalist", "pixel art landscape",
+    ],
+    "moon_night": [
+        "moon", "moonlight", "blood moon", "full moon", "crescent moon", "lunar", "night sky", "starry night",
+        "dark sky",
+    ],
+    "anime": [
+        "anime scenery rain", "demon slayer", "jujutsu kaisen", "chainsaw man", "one piece", "evangelion",
+        "evangelion unit", "solo leveling", "frieren", "spy x family", "studio ghibli", "akira", "bleach anime",
+        "naruto", "dragon ball",
+    ],
+    "games": [
+        "elden ring", "zelda breath of the wild", "cyberpunk 2077 night city", "ghost of tsushima",
+        "hollow knight", "final fantasy", "god of war", "horizon zero dawn", "red dead redemption 2", "sekiro",
+        "hades game", "nier automata", "league of legends", "the last of us", "persona 5", "genshin impact",
+        "resident evil", "skyrim", "fallout", "mass effect", "dark souls", "witcher geralt",
+    ],
+    "movies": [
+        "blade runner", "dune", "arcane", "batman", "spider-verse", "star wars", "lord of the rings",
+    ],
+}
+# The four sources in the order the Settings window lists them, and their names there
+SOURCE_ORDER = ("wallhaven", "museum", "local", "game")
+MIX_LABELS = {"wallhaven": "Wallhaven", "museum": "Met paintings", "local": "My folders", "game": "Favourite game"}
 
 # ─── Setup ────────────────────────────────────────────────────
 WALLPAPER_DIR.mkdir(parents=True, exist_ok=True)
@@ -327,6 +274,84 @@ def _merge_settings(defaults, loaded):
     return loaded if isinstance(loaded, type(defaults)) else defaults
 
 
+def is_legacy_settings(loaded: dict) -> bool:
+    """A settings.json written before topics existed (it needs migrate_settings)."""
+    return "topics" not in loaded
+
+
+def migrate_settings(old: dict) -> dict:
+    """The new-format settings that give exactly the mix the old app used for this file."""
+    d = _merge_settings(LEGACY_DEFAULTS, old)  # what the old app read, defaults included
+    chances = d["chances"]
+    # The old app gave general Wallhaven whatever the other chances left over
+    chances["wallhaven"] = round(max(0.0, 1 - (chances["local"] + chances["game"] + chances["museum"])), 4)
+    d["topics"] = {t: {"enabled": True, "searches": list(s)} for t, s in LEGACY_TOPIC_SEARCHES.items()}
+    return _merge_settings(DEFAULT_SETTINGS, d)
+
+
+def clean_search(text: str, existing: list[str]) -> str | None:
+    """The search as it should be stored, or None if it's empty, too long or already there."""
+    cleaned = " ".join(text.split())
+    if not cleaned or len(cleaned) > MAX_SEARCH_LENGTH:
+        return None
+    if cleaned.casefold() in {" ".join(e.split()).casefold() for e in existing}:
+        return None
+    return cleaned
+
+
+def _setting_at(data: dict, path: tuple):
+    """The value at path inside data, or KeyError/TypeError if it isn't there."""
+    for key in path:
+        data = data[key]
+    return data
+
+
+def settings_patch(before: dict, after: dict) -> dict:
+    """What a form changed, setting by setting, so applying it keeps other changes made meanwhile.
+
+    Folders are listed as adds and removes, not whole lists, for the same reason.
+    """
+    paths = [("interval_minutes",), ("game_name",), ("game_queries",)]
+    paths += [("chances", s) for s in before["chances"]]
+    paths += [("topics", t, f) for t in before["topics"] for f in ("enabled", "searches")]
+    changes = []
+    for path in paths:
+        try:
+            value = _setting_at(after, path)
+        except (KeyError, TypeError):
+            continue  # the form doesn't hold this setting
+        if value != _setting_at(before, path):
+            changes.append((path, copy.deepcopy(value)))
+
+    local = after.get("local_folders", before["local_folders"])
+    game = after.get("game_folders", before["game_folders"])
+    kept = set(local) | set(game)
+    return {
+        "set": changes,
+        "add_folders": [f for f in local if f not in before["local_folders"]],
+        "remove_folders": [f for f in dict.fromkeys(before["local_folders"] + before["game_folders"])
+                           if f not in kept],
+    }
+
+
+def apply_patch(data: dict, patch: dict) -> None:
+    """Apply a settings_patch to settings data in place (no I/O)."""
+    for path, value in patch["set"]:
+        try:
+            parent = _setting_at(data, path[:-1])
+        except (KeyError, TypeError):
+            continue  # the setting no longer exists
+        if isinstance(parent, dict) and path[-1] in parent:
+            parent[path[-1]] = copy.deepcopy(value)
+    for folder in patch["add_folders"]:
+        if folder not in data["local_folders"]:
+            data["local_folders"].append(folder)
+    for folder in patch["remove_folders"]:
+        # A removed folder leaves both lists, as removing it from the tray does
+        for key in ("local_folders", "game_folders"):
+            data[key][:] = [f for f in data[key] if f != folder]
+
+
 class Settings:
     """settings.json, shared by the tray menu and the wallpaper changer."""
 
@@ -336,38 +361,121 @@ class Settings:
         # wallpaper thread's reload() must wait for a tray change to finish saving
         self.lock = threading.RLock()
         self.data = copy.deepcopy(DEFAULT_SETTINGS)
+        self.created = False      # reload found no file and wrote the defaults (first run)
+        self.legacy = False       # data was migrated from an old-format file not yet written back
+        self._legacy_raw = None   # that file's bytes, for settings.json.bak
+        self.problem = None       # why the last read or save failed: "broken" or "backup"
         self.reload()
 
     def reload(self) -> bool:
-        """Re-read the file. On a broken file, keep the current settings and return False."""
+        """Re-read the file. On a broken file, keep the current settings and return False.
+
+        An old-format file is migrated in memory only; save() writes it (after backing it up).
+        """
         with self.lock:
             if not self.path.exists():
                 self.data = copy.deepcopy(DEFAULT_SETTINGS)
+                self.legacy, self._legacy_raw, self.problem = False, None, None
+                self.created = True
                 self.save()
                 return True
             try:
-                loaded = json.loads(self.path.read_text(encoding="utf-8"))
+                raw = self.path.read_bytes()
+                loaded = json.loads(raw.decode("utf-8"))
+                if not isinstance(loaded, dict):
+                    raise ValueError(f"expected a JSON object, got {type(loaded).__name__}")
             except (OSError, ValueError) as e:
                 log.warning(f"Can't read {self.path.name}, keeping previous settings: {e}")
+                self.problem = "broken"
                 return False
-            self.data = _merge_settings(DEFAULT_SETTINGS, loaded)
+            if is_legacy_settings(loaded):
+                self.data = migrate_settings(loaded)
+                self.legacy, self._legacy_raw = True, raw
+            else:
+                self.data = _merge_settings(DEFAULT_SETTINGS, loaded)
+                self.legacy, self._legacy_raw = False, None
+            self.problem = None
             return True
 
-    def save(self):
-        """Write via a temp file so a crash mid-save can't leave a half-written file."""
+    def save(self) -> bool:
+        """Write via a temp file so a crash mid-save can't leave a half-written file.
+
+        Before the first write over an old-format file, its original bytes go to settings.json.bak
+        (never overwritten, so it always holds the first original). If that backup or the write
+        fails, settings.json is left as it was, `problem` says why and this returns False.
+        """
         with self.lock:
+            if self.legacy:
+                bak = self.path.with_name(self.path.name + ".bak")
+                bak_tmp = self.path.with_name(self.path.name + ".bak.tmp")
+                error = None
+                if not bak.exists():
+                    try:
+                        bak_tmp.write_bytes(self._legacy_raw)
+                        os.rename(bak_tmp, bak)  # on Windows this refuses to replace an existing .bak
+                    except FileExistsError:
+                        pass  # a .bak appeared meanwhile: keep that one (checked below)
+                    except OSError as e:
+                        error = e
+                    try:
+                        bak_tmp.unlink(missing_ok=True)
+                    except OSError:
+                        pass  # only a leftover temp file; harmless, and the next save retries
+                if error is None and not bak.is_file():
+                    error = f"{bak.name} exists but is not a file"  # e.g. a folder: no copy is kept
+                if error is not None:
+                    # HZ-2: absorbed so the tray keeps running, but logged, and the save is
+                    # refused so the original is never lost without a copy
+                    log.warning(f"Can't back up {self.path.name} to {bak.name}, not saving: {error}")
+                    self.problem = "backup"
+                    return False
             tmp = self.path.with_suffix(".json.tmp")
-            tmp.write_text(json.dumps(self.data, indent=2), encoding="utf-8")
-            os.replace(tmp, self.path)
+            try:
+                tmp.write_text(json.dumps(self.data, indent=2), encoding="utf-8")
+                os.replace(tmp, self.path)
+            except OSError as e:
+                # HZ-2: absorbed so the tray keeps running (e.g. a read-only settings.json), but
+                # logged, and the caller is told the save didn't happen
+                log.warning(f"Can't write {self.path.name}, nothing saved: {e}")
+                self.problem = "write"
+                try:
+                    tmp.unlink(missing_ok=True)
+                except OSError:
+                    pass  # only a leftover temp file; the warning above already says why
+                return False
+            self.legacy, self._legacy_raw, self.problem = False, None, None
+            return True
 
     def update(self, change) -> bool:
-        """Reload, apply change(data), save. Won't overwrite a file the user broke by hand."""
+        """Reload, apply change(data), save. Won't overwrite a file the user broke by hand.
+
+        On a refused save the change is dropped from memory too, so memory matches the file.
+        """
         with self.lock:
             if not self.reload():
                 return False
+            unchanged = copy.deepcopy(self.data)
             change(self.data)
-            self.save()
+            if not self.save():
+                self.data = unchanged
+                return False
             return True
+
+    def snapshot(self) -> dict:
+        """A copy of the settings that later changes can't touch."""
+        with self.lock:
+            return copy.deepcopy(self.data)
+
+    def persist_migration(self) -> bool:
+        """Write an old-format file in the new format (with its .bak). Call only once the app owns
+        the single-instance mutex, so a second start or the old app never rewrites the file.
+
+        Re-reads first: a file broken since it was loaded is never touched, a hand edit made
+        meanwhile is kept, and the .bak holds exactly the bytes being replaced."""
+        with self.lock:
+            if not self.reload():
+                return False
+            return self.save() if self.legacy else True
 
     @property
     def interval_seconds(self) -> int:
@@ -375,17 +483,6 @@ class Settings:
 
     def enabled(self, source: str) -> bool:
         return self.data["sources"][source]
-
-    def chance(self, source: str) -> float:
-        return self.data["chances"][source]
-
-    @property
-    def local_folders(self) -> list[Path]:
-        return [Path(f) for f in self.data["local_folders"]]
-
-    @property
-    def game_folders(self) -> list[Path]:
-        return [Path(f) for f in self.data["game_folders"]]
 
 
 settings = Settings(SETTINGS_FILE)
@@ -535,6 +632,153 @@ def is_fullscreen_app_running() -> bool:
         return False
 
 
+# ─── Startup ──
+# Writes the .lnk through the Unicode IShellLinkW interface (WScript.Shell turns characters outside the
+# ANSI code page into "?"), then prints the target read back from the saved file as UTF-8.
+# Paths reach PowerShell only through the WS_* environment variables, never pasted into the script text.
+SHORTCUT_PS = r"""
+$ErrorActionPreference = 'Stop'
+[Console]::OutputEncoding = [Text.Encoding]::UTF8
+Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+using System.Runtime.InteropServices.ComTypes;
+using System.Text;
+
+[ComImport, InterfaceType(ComInterfaceType.InterfaceIsIUnknown), Guid("000214F9-0000-0000-C000-000000000046")]
+interface IShellLinkW {
+    void GetPath([Out, MarshalAs(UnmanagedType.LPWStr)] StringBuilder file, int size, IntPtr data, uint flags);
+    void GetIDList(out IntPtr idList);
+    void SetIDList(IntPtr idList);
+    void GetDescription([Out, MarshalAs(UnmanagedType.LPWStr)] StringBuilder name, int size);
+    void SetDescription([MarshalAs(UnmanagedType.LPWStr)] string name);
+    void GetWorkingDirectory([Out, MarshalAs(UnmanagedType.LPWStr)] StringBuilder dir, int size);
+    void SetWorkingDirectory([MarshalAs(UnmanagedType.LPWStr)] string dir);
+    void GetArguments([Out, MarshalAs(UnmanagedType.LPWStr)] StringBuilder args, int size);
+    void SetArguments([MarshalAs(UnmanagedType.LPWStr)] string args);
+    void GetHotkey(out short hotkey);
+    void SetHotkey(short hotkey);
+    void GetShowCmd(out int showCmd);
+    void SetShowCmd(int showCmd);
+    void GetIconLocation([Out, MarshalAs(UnmanagedType.LPWStr)] StringBuilder path, int size, out int index);
+    void SetIconLocation([MarshalAs(UnmanagedType.LPWStr)] string path, int index);
+    void SetRelativePath([MarshalAs(UnmanagedType.LPWStr)] string path, uint reserved);
+    void Resolve(IntPtr hwnd, uint flags);
+    void SetPath([MarshalAs(UnmanagedType.LPWStr)] string file);
+}
+
+[ComImport, Guid("00021401-0000-0000-C000-000000000046")]
+class ShellLink {}
+
+public static class WallSwapShortcut {
+    public static void Save(string lnk, string target, string args, string dir, string icon) {
+        IShellLinkW link = (IShellLinkW)new ShellLink();
+        link.SetPath(target);
+        link.SetArguments(args);
+        link.SetWorkingDirectory(dir);
+        int comma = icon.LastIndexOf(',');
+        link.SetIconLocation(icon.Substring(0, comma), int.Parse(icon.Substring(comma + 1)));
+        ((IPersistFile)link).Save(lnk, true);
+    }
+
+    public static string Target(string lnk) {
+        IShellLinkW link = (IShellLinkW)new ShellLink();
+        ((IPersistFile)link).Load(lnk, 0);
+        StringBuilder target = new StringBuilder(32768);
+        link.GetPath(target, target.Capacity, IntPtr.Zero, 4);  // 4 = SLGP_RAWPATH: as stored, not resolved
+        return target.ToString();
+    }
+}
+'@
+[WallSwapShortcut]::Save($env:WS_LNK, $env:WS_TARGET, $env:WS_ARGS, $env:WS_WD, $env:WS_ICON)
+[WallSwapShortcut]::Target($env:WS_LNK)
+"""
+
+
+@dataclasses.dataclass(frozen=True)
+class ShortcutSpec:
+    target: str
+    arguments: str
+    working_dir: str
+    icon: str
+
+
+def startup_shortcut_spec(executable: Path, script: Path, icon: Path, pythonw_exists: bool) -> ShortcutSpec:
+    """Describe the shortcut that starts WallSwap; pythonw when present so no console window opens."""
+    return ShortcutSpec(
+        target=str(executable.with_name("pythonw.exe") if pythonw_exists else executable),
+        arguments=f'"{script}"',
+        working_dir=str(script.parent),
+        icon=f"{icon},0",
+    )
+
+
+def startup_shortcut_path() -> Path:
+    """Where the Start with Windows shortcut lives; APPDATA is read now, not at import."""
+    return Path(os.environ["APPDATA"]) / "Microsoft/Windows/Start Menu/Programs/Startup" / STARTUP_SHORTCUT_NAME
+
+
+def startup_enabled() -> bool:
+    return startup_shortcut_path().exists()
+
+
+def windows_directory() -> PureWindowsPath:
+    """The Windows folder as the OS reports it; %SystemRoot% is not trusted, any parent process can set it."""
+    buf = ctypes.create_unicode_buffer(MAX_WINDOWS_PATH)
+    try:
+        length = ctypes.windll.kernel32.GetSystemWindowsDirectoryW(buf, MAX_WINDOWS_PATH)
+    except AttributeError:  # ctypes.windll exists only on Windows; elsewhere use the default folder
+        length = 0
+    found = PureWindowsPath(buf.value)
+    if 0 < length < MAX_WINDOWS_PATH and found.is_absolute():
+        return found
+    return PureWindowsPath(r"C:\Windows")
+
+
+def _last_line(output: bytes | None) -> str:
+    """The last non-empty line of a process's output, short enough for a message."""
+    lines = [ln.strip() for ln in (output or b"").decode(errors="replace").splitlines() if ln.strip()]
+    return lines[-1][:200] if lines else ""
+
+
+def write_shortcut(path: Path, spec: ShortcutSpec):
+    """Write a .lnk through the Unicode IShellLinkW interface; raises OSError on failure so the caller can tell the user (HZ-2)."""
+    # Absolute path from the OS, so a powershell.exe planted next to the script, in .venv or under a
+    # relative %SystemRoot% can never run
+    powershell = windows_directory() / "System32/WindowsPowerShell/v1.0/powershell.exe"
+    try:
+        done = subprocess.run(
+            [str(powershell), "-NoProfile", "-NonInteractive", "-Command", SHORTCUT_PS],
+            env={**os.environ, "WS_LNK": str(path), "WS_TARGET": spec.target, "WS_ARGS": spec.arguments,
+                 "WS_WD": spec.working_dir, "WS_ICON": spec.icon},
+            creationflags=CREATE_NO_WINDOW, capture_output=True, check=True, timeout=15,
+        )
+    except subprocess.TimeoutExpired:
+        raise OSError("PowerShell took longer than 15 seconds") from None
+    except subprocess.CalledProcessError as e:
+        # str(e) would repeat the whole script; PowerShell's own error is in stderr
+        reason = _last_line(e.stderr) or f"exit code {e.returncode}"
+        log.warning(f"Startup shortcut PowerShell failed: {(e.stderr or b'').decode(errors='replace')}")
+        raise OSError(f"PowerShell said: {reason}") from None
+    if not path.exists():
+        raise OSError(f"Startup shortcut was not created: {path}")
+    # A shortcut whose target came out mangled would silently never start WallSwap
+    saved_target = (done.stdout or b"").decode("utf-8-sig", errors="replace").strip()
+    if saved_target != spec.target:
+        raise OSError(f"Startup shortcut points to {saved_target!r}, not {spec.target!r}: {path}")
+
+
+def set_start_with_windows(enabled: bool, write=write_shortcut) -> None:
+    """Create or remove Startup\\WallSwap.lnk; that exact file is the only one ever deleted (INV-16)."""
+    path = startup_shortcut_path()
+    if not enabled:
+        path.unlink(missing_ok=True)
+        return
+    exe = Path(sys.executable)
+    write(path, startup_shortcut_spec(exe, SCRIPT_DIR / "wallpaper_changer.py", ICON_PATH,
+                                      exe.with_name("pythonw.exe").exists()))
+
+
 # ─── Image Validation ─────────────────────────────────────────
 def fits_screen(w: int, h: int, min_ratio: float = 1.0, max_ratio: float = float("inf"),
                 check_size: bool = True) -> bool:
@@ -598,12 +842,10 @@ def safe_get(url: str, *, params: dict | None = None, timeout: int = 15,
 
 
 # ─── Sources ──────────────────────────────────────────────────
-def fetch_from_wallhaven(queries: list[str] | None = None, sorting: str | None = None,
+def fetch_from_wallhaven(queries: list[str], sorting: str | None = None,
                          source: str = "wallhaven") -> Wallpaper | None:
-    """Fetch a random 1440p+ wallpaper from Wallhaven."""
-    if queries is None:
-        queries = WALLHAVEN_QUERIES
-    if not queries:  # e.g. game_queries emptied in settings.json: don't fall back to general
+    """Fetch a random 1440p+ wallpaper from Wallhaven for one of the searches."""
+    if not queries:  # nothing ticked, or game_queries emptied: there is no general fallback
         return None
     query = random.choice(queries)
     sorting = sorting or random.choices(
@@ -778,10 +1020,8 @@ def is_landscape_wallpaper(image_path: Path) -> bool:
         return False
 
 
-def pick_local_wallpaper(folders: list[Path] | None = None) -> Wallpaper | None:
-    """Pick a random image from the folders (default: local folders), cycling before repeating."""
-    if folders is None:
-        folders = settings.local_folders
+def pick_local_wallpaper(folders: list[Path]) -> Wallpaper | None:
+    """Pick a random image from the folders, cycling before repeating."""
     candidates = [
         p for folder in folders if folder.is_dir()
         for p in folder.iterdir()
@@ -817,45 +1057,100 @@ def pick_local_wallpaper(folders: list[Path] | None = None) -> Wallpaper | None:
 
 
 # ─── Core Logic ───────────────────────────────────────────────
-def fetch_source(source: str) -> Wallpaper | None:
-    """Get one wallpaper from the named source."""
+def wallhaven_query_pool(data: dict) -> list[str]:
+    """The searches of the ticked topics, in topic order, without blanks or repeats (any case)."""
+    pool, seen = [], set()
+    for topic in TOPIC_LABELS:
+        entry = data["topics"].get(topic)
+        if not entry or not entry["enabled"]:
+            continue
+        for search in entry["searches"]:
+            search = search.strip()
+            if search and search.casefold() not in seen:
+                seen.add(search.casefold())
+                pool.append(search)
+    return pool
+
+
+def source_available(data: dict, source: str) -> bool:
+    """Whether the source has anything to pick from."""
+    if source == "wallhaven":
+        return bool(wallhaven_query_pool(data))
+    if source == "game":
+        return bool(data["game_queries"] or data["game_folders"])
     if source == "local":
-        return pick_local_wallpaper()
+        return bool(data["local_folders"])
+    return True  # museum
+
+
+EMPTY_SOURCE_REASONS = {
+    "wallhaven": "Tick a topic with searches",
+    "game": "Add game searches or folders",
+    "local": "Add a folder to use this",
+}
+
+
+def drop_reason(data: dict, source: str) -> str | None:
+    """Why the source gets no share of changes, or None when it has one."""
+    if not data["sources"][source]:
+        return "Off in the tray menu"
+    if not source_available(data, source):
+        return EMPTY_SOURCE_REASONS[source]
+    if data["chances"][source] <= 0:
+        return "Set above 0%"
+    return None
+
+
+def source_weights(data: dict) -> dict[str, float]:
+    """Relative weight of each source that is on, has something to use and is above 0."""
+    chances, on = data["chances"], data["sources"]
+    return {s: chances[s] for s in SOURCE_ORDER
+            if chances[s] > 0 and on[s] and source_available(data, s)}
+
+
+def source_shares(weights: dict[str, float]) -> dict[str, int]:
+    """Whole percentages per source that add up to 100 (largest remainder); {} when all are 0."""
+    total = sum(weights.values())
+    if total <= 0:
+        return {}
+    exact = {s: w * 100 / total for s, w in weights.items()}
+    shares = {s: int(x) for s, x in exact.items()}
+    by_remainder = sorted(exact, key=lambda s: exact[s] - shares[s], reverse=True)
+    for s in by_remainder[:100 - sum(shares.values())]:
+        shares[s] += 1
+    return shares
+
+
+def fetch_source(source: str, data: dict) -> Wallpaper | None:
+    """Get one wallpaper from the named source, using the settings in data."""
+    if source == "local":
+        return pick_local_wallpaper([Path(f) for f in data["local_folders"]])
     if source == "game":
         # Few game wallpapers exist on Wallhaven: "random" sorting reaches all of them
         # (toplist only returns a handful). Once they've all been shown, use the game folders.
-        queries = settings.data["game_queries"]
+        queries = data["game_queries"]
         wallpaper = queries and download_wallpaper(
             lambda: fetch_from_wallhaven(queries, "random", source="game"), attempts=2)
-        return wallpaper or pick_local_wallpaper(settings.game_folders)
+        return wallpaper or pick_local_wallpaper([Path(f) for f in data["game_folders"]])
     if source == "museum":
         return download_wallpaper(fetch_from_museum, attempts=3)
-    return download_wallpaper(fetch_from_wallhaven)
-
-
-def source_weights() -> dict[str, float]:
-    """Share of changes per enabled source; general Wallhaven gets whatever's left."""
-    chances = {s: settings.chance(s) for s in ("local", "game", "museum")}
-    weights = {**chances, "wallhaven": max(0.0, 1 - sum(chances.values()))}
-    return {s: w for s, w in weights.items() if w > 0 and settings.enabled(s)}
+    return download_wallpaper(lambda: fetch_from_wallhaven(wallhaven_query_pool(data)))
 
 
 def get_new_wallpaper() -> Wallpaper | None:
     """Pick a source at random by weight, falling back to the others if it fails."""
-    weights = source_weights()
+    data = settings.snapshot()
+    weights = source_weights(data)
     if not weights:
-        log.warning("Every source is turned off (or has a chance of 0)")
+        log.warning("Every source is off, empty or at 0%")
         return None
     choice = random.choices(list(weights), weights=list(weights.values()), k=1)[0]
 
-    # Fallbacks: general Wallhaven, then local folders (e.g. when offline)
-    order = [choice, "wallhaven", "local"]
-    tried = set()
-    for source in order:
-        if source in tried or not settings.enabled(source):
-            continue
-        tried.add(source)
-        wallpaper = fetch_source(source)
+    # Fallbacks (e.g. when offline): general Wallhaven, then local folders, but only a source
+    # that has a share, so one that is off, empty or at 0% is never used
+    order = [choice] + [s for s in ("wallhaven", "local") if s in weights]
+    for source in dict.fromkeys(order):
+        wallpaper = fetch_source(source, data)
         if wallpaper:
             return wallpaper
     return None
@@ -905,6 +1200,14 @@ class WallSwapApp:
         self.elapsed = 0
         self.change_lock = threading.Lock()  # one wallpaper change at a time
         self.folder_dialog_open = False
+        self.root = None  # the hidden Tk root; every Tk call happens on its (the main) thread
+        self.ui_calls = queue.SimpleQueue()  # calls from other threads waiting for the Tk thread
+        self.settings_window = None
+        self.settings_ui = None  # the settings_window module, imported in run()
+        # Held from a tray Add Folder click until its dialog closes, so clicks while it is queued or open (the
+        # drain is blocked behind a modal dialog) can't pile up dialogs. A lock, because the tray thread takes it
+        # and the Tk thread releases it.
+        self.tray_folder_pending = threading.Lock()
 
     def create_tray_icon(self) -> Image.Image:
         """Load the app icon for the system tray."""
@@ -1032,14 +1335,16 @@ class WallSwapApp:
         if self.icon:
             self.icon.icon = self.create_tray_icon()
 
-    def _change_setting(self, change, done_message: str | None = None):
-        if settings.update(change):
-            self.refresh_menu()
-            if done_message:
-                self.notify(done_message)
-        else:
-            self.notify("settings.json has a mistake in it, so nothing was changed. "
-                        "Fix it or delete it to go back to the defaults.")
+    def _change_setting(self, change, done_message: str | None = None) -> bool:
+        # problem is read under the same lock as update(), so a timer reload can't reset it in between
+        with settings.lock:
+            if not settings.update(change):
+                self.notify(self._problem_message())
+                return False
+        self.refresh_menu()
+        if done_message:
+            self.notify(done_message)
+        return True
 
     def interval_item(self, minutes: int) -> pystray.MenuItem:
         label = f"{minutes} min" if minutes < 60 else f"{minutes // 60} hour" + ("s" if minutes > 60 else "")
@@ -1067,8 +1372,9 @@ class WallSwapApp:
         folders = local + [f for f in game if f not in local]
         if not folders:
             yield pystray.MenuItem("(no folders yet)", None, enabled=False)
+        game_tag = f"  ({settings.data['game_name'] or 'game'})"
         for folder in folders:
-            tag = f"  ({settings.data['game_name']})" if folder in game else ""
+            tag = game_tag if folder in game else ""
             yield pystray.MenuItem(f"✖ Remove  {folder}{tag}", self._remove_folder_action(folder))
 
     def _remove_folder_action(self, folder: str):
@@ -1081,33 +1387,42 @@ class WallSwapApp:
         return remove
 
     def add_local_folder(self, _=None):
+        if not self.tray_folder_pending.acquire(blocking=False):
+            return  # one is already queued or open
+        self.post_to_ui(self._add_folder_from_tray)
+
+    def ask_folder(self, parent=None) -> str | None:
+        """Tk thread: ask for a folder with the standard Windows dialog. None if cancelled or one is already open."""
+        # A modal dialog keeps Tk's event loop running, so the queue can drain a second Add Folder meanwhile
         if self.folder_dialog_open:
-            return
-        self.folder_dialog_open = True  # set before the thread starts, so a double-click can't open two
-        threading.Thread(target=self._pick_folder, daemon=True).start()
-
-    def _pick_folder(self):
-        """Ask for a folder with the standard Windows dialog, then add it."""
+            return None
+        self.folder_dialog_open = True
+        owner = parent or self.root
         try:
-            import tkinter as tk
-            from tkinter import filedialog
-
-            root = tk.Tk()
-            root.withdraw()
-            root.attributes("-topmost", True)
+            # Windows' foreground lock can open the dialog behind other windows; a topmost owner brings it to the front
+            owner.attributes("-topmost", True)
             folder = filedialog.askdirectory(
-                parent=root, title="Choose a folder of wallpapers",
+                parent=owner, title="Choose a folder of wallpapers",
                 initialdir=str(Path.home() / "Pictures"))
-            root.destroy()
-        except Exception as e:
+        except TclError as e:
             log.error(f"Folder picker failed: {e}")
             folder = ""
         finally:
             self.folder_dialog_open = False
+            try:
+                owner.attributes("-topmost", False)
+            except TclError:
+                pass  # the owner window was closed while the dialog was open; nothing left to lower
+        return str(Path(folder)) if folder else None
 
+    def _add_folder_from_tray(self):
+        """Tk thread: ask for a folder, then add it to My Folders."""
+        try:
+            folder = self.ask_folder()
+        finally:
+            self.tray_folder_pending.release()  # the dialog is closed (chosen, cancelled or failed)
         if not folder:
             return
-        folder = str(Path(folder))
         if folder in settings.data["local_folders"]:
             self.notify(f"Already using {folder}")
             return
@@ -1116,21 +1431,118 @@ class WallSwapApp:
             f"Added {folder}")
 
     def open_settings(self, _=None):
-        """Open settings.json in Notepad."""
-        if not SETTINGS_FILE.exists():
-            settings.save()
-        subprocess.Popen(["notepad.exe", str(SETTINGS_FILE)])
-        self.notify("Changes you make in the file apply from the next wallpaper change.")
+        """Open the Settings window (or bring it to the front) on the Tk thread."""
+        self.post_to_ui(self._show_settings)
+
+    def _show_settings(self):
+        """Tk thread: open the Settings window on a snapshot of the settings, or raise the one already open."""
+        if self.settings_window is not None and self.settings_window.winfo_exists():
+            self.settings_window.bring_to_front()
+            return
+
+        def closed():
+            self.settings_window = None
+
+        deps = self.settings_ui.WindowDeps(
+            snapshot=settings.snapshot(),
+            topic_labels=TOPIC_LABELS,
+            mix_labels=MIX_LABELS,
+            source_order=SOURCE_ORDER,
+            interval_choices=INTERVAL_CHOICES,
+            shares=lambda d: source_shares(source_weights(d)),
+            drop_reason=drop_reason,
+            clean_search=clean_search,
+            patch=settings_patch,
+            ask_folder=self.ask_folder,
+            save=self._save_from_window,
+            startup_on=startup_enabled(),
+            icon_path=ICON_PATH,
+            on_closed=closed,
+            game_name_max=MAX_GAME_NAME_LENGTH,
+        )
+        self.settings_window = self.settings_ui.SettingsWindow(self.root, deps)
+
+    def _save_from_window(self, patch: dict, start_with_windows: bool | None) -> str | None:
+        """Tk thread: write what the window changed, then the Start with Windows choice. An error message, or None."""
+        if any(patch.values()):
+            # problem is read under the same lock as update(), so a timer reload can't reset it in between
+            with settings.lock:
+                if not settings.update(lambda d: apply_patch(d, patch)):
+                    return self._problem_message()  # nothing saved, so the shortcut is left alone too
+        self.refresh_menu()
+        if start_with_windows is not None:
+            try:
+                set_start_with_windows(start_with_windows)
+            except (OSError, subprocess.SubprocessError) as e:
+                # HZ-2: absorbed so the window stays usable, but logged and shown in its banner
+                log.warning(f"Couldn't change Start with Windows: {e}")
+                return f"Settings saved, but Start with Windows couldn't be changed: {e}"
+        self.notify("Settings saved. They apply from the next wallpaper change.")
+        return None
+
+    def _problem_message(self) -> str:
+        """Why the last settings save was refused, for the window's banner."""
+        with settings.lock:
+            problem = settings.problem
+        if problem == "backup":
+            return ("Couldn't make the settings.json.bak backup, so nothing was saved. "
+                    "Check the WallSwap folder can be written to, then try again.")
+        if problem == "write":
+            return "Couldn't save settings.json (is it read-only?), so nothing was saved."
+        return "settings.json has a mistake in it, so nothing was saved. Fix it or delete it to go back to the defaults."
 
     def open_folder(self, _=None):
         """Open the wallpaper save folder."""
         os.startfile(str(WALLPAPER_DIR))
 
     def quit_app(self, _=None):
-        """Exit the application."""
+        """Exit the application (tray thread): close the Tk side through the queue, then the tray."""
         self.running = False
+        self.post_to_ui(self._close_ui)
         if self.icon:
             self.icon.stop()
+
+    # ── Tk thread ──
+    def post_to_ui(self, fn):
+        """Run fn on the Tk (main) thread soon. Safe from any thread."""
+        self.ui_calls.put(fn)
+
+    def _drain_ui(self):
+        """Tk thread: run every queued call, then check again in UI_POLL_MS."""
+        try:
+            while True:
+                try:
+                    fn = self.ui_calls.get_nowait()
+                except queue.Empty:
+                    break
+                if not self.running and fn != self._close_ui:
+                    continue  # quitting: nothing else may run now (a folder dialog must not open after Quit)
+                try:
+                    fn()
+                except Exception:
+                    # HZ-2: a bug or Tk error in one call must not kill the queue (Quit and Add Folder go through
+                    # it); it is logged, and the user sees only that one action do nothing
+                    log.exception("A queued UI call failed")
+        finally:
+            # Always reschedule, even after Quit: quit_app can set running=False after this drain's last pop but
+            # before it queues _close_ui, and that call must still run. root.quit() ends mainloop regardless.
+            self.root.after(UI_POLL_MS, self._drain_ui)
+
+    def _close_ui(self):
+        """Tk thread: close the settings window, if open, and end mainloop."""
+        if self.settings_window is not None:
+            try:
+                self.settings_window.destroy()
+            except TclError:
+                pass  # the user closed it at the same moment; nothing left to destroy
+            self.settings_window = None
+        self.root.quit()
+
+    def _on_tray_ready(self, icon):
+        """pystray setup thread: show the icon, then start the timer (so it never notifies an icon that isn't up)."""
+        icon.visible = True
+        self.timer_thread = threading.Thread(target=self.timer_loop, daemon=True)
+        self.timer_thread.start()
 
     def timer_loop(self):
         """Background timer that triggers wallpaper changes."""
@@ -1162,13 +1574,14 @@ class WallSwapApp:
                 *[self.interval_item(m) for m in INTERVAL_CHOICES])),
             pystray.MenuItem("🌐 Sources", pystray.Menu(
                 self.source_item("wallhaven", "Wallhaven (general)"),
-                self.source_item("game", lambda item: f"Wallhaven: {settings.data['game_name']}"),
+                self.source_item("game", lambda item: (
+                    f"Wallhaven: {name}" if (name := settings.data["game_name"]) else "Favourite game")),
                 self.source_item("museum", "The Met (paintings)"),
                 self.source_item("local", "My folders"),
             )),
             pystray.MenuItem("📂 My Folders", pystray.Menu(self.local_folder_items)),
             pystray.Menu.SEPARATOR,
-            pystray.MenuItem("⚙️ Settings", self.open_settings),
+            pystray.MenuItem("⚙️ Settings…", self.open_settings),
             pystray.MenuItem("📁 WallSwap Folder", self.open_folder),
             pystray.Menu.SEPARATOR,
             pystray.MenuItem("❌ Quit", self.quit_app),
@@ -1183,20 +1596,43 @@ class WallSwapApp:
         log.info(f"Min resolution: {MIN_WIDTH}x{MIN_HEIGHT}")
         log.info("=" * 50)
 
+        # Imported here, not at the top: customtkinter starts darkdetect and its root makes the whole process
+        # DPI-aware, side effects that must stay out of a plain import (and so out of pytest). settings_window
+        # imports customtkinter, so it comes in here too.
+        import customtkinter as ctk
+        import settings_window
+        self.settings_ui = settings_window
+
+        # Only now, after the single-instance mutex, may an upgraded settings.json be written
+        if not settings.persist_migration():
+            log.warning("Couldn't save the upgraded settings.json; using the upgraded settings in memory for now")
+
+        # The Tk root comes before the tray, so the process is DPI-aware before pystray creates its windows
+        self.root = ctk.CTk()
+        self.root.withdraw()
+
         self.icon = pystray.Icon(
             "WallSwap",
             self.create_tray_icon(),
             "WallSwap - Fresh Wallpapers",
             self.build_menu(),
         )
+        # The tray runs its own thread; _on_tray_ready shows it and starts the timer once it is up
+        self.icon.run_detached(setup=self._on_tray_ready)
 
-        # Start timer in background thread
-        self.timer_thread = threading.Thread(
-            target=self.timer_loop, daemon=True)
-        self.timer_thread.start()
+        self.root.after(UI_POLL_MS, self._drain_ui)
+        if settings.created:
+            self.post_to_ui(self._show_settings)  # first run; the first wallpaper change still happens right away
 
-        # Run the tray icon (blocks until quit)
-        self.icon.run()
+        try:
+            self.root.mainloop()  # blocks until _close_ui calls root.quit()
+        finally:
+            self.running = False
+            self.icon.stop()
+            try:
+                self.root.destroy()
+            except TclError:
+                pass  # Tk already tore the root down (it failed or was destroyed); nothing left to close
 
         log.info("WallSwap stopped. Goodbye!")
 
