@@ -110,7 +110,7 @@ If the lock screen doesn't change, check that it's set to "Picture" rather than 
 
 ## Licence
 
-MIT; see [LICENSE](LICENSE). Bundled third-party parts keep their own licences, listed in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+MIT; see [LICENSE](LICENSE). The icon and libraries keep their own licences: see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md), and the downloads include `THIRD_PARTY_LICENSES.txt` with the full texts of everything they bundle (Python, Tcl/Tk, pystray, Pillow, requests and the rest).
 
 ## Credits
 

@@ -50,10 +50,10 @@ Source: "..\dist\WallSwap\*"; DestDir: "{app}"; Flags: ignoreversion recursesubd
 
 [Icons]
 Name: "{autoprograms}\WallSwap"; Filename: "{app}\WallSwap.exe"
-Name: "{userdesktop}\WallSwap"; Filename: "{app}\WallSwap.exe"; Tasks: desktopicon
+Name: "{userdesktop}\WallSwap"; Filename: "{app}\WallSwap.exe"; Tasks: desktopicon; Check: KeepShortcut('{userdesktop}\WallSwap.lnk')
 ; {userstartup}\WallSwap.lnk is startup_shortcut_path(); target, no arguments, working dir and icon match
 ; startup_shortcut_spec(..., frozen=True) in wallpaper_changer.py. Keep the two in step.
-Name: "{userstartup}\WallSwap"; Filename: "{app}\WallSwap.exe"; WorkingDir: "{app}"; IconFilename: "{app}\WallSwap.exe"; IconIndex: 0; Tasks: startupicon
+Name: "{userstartup}\WallSwap"; Filename: "{app}\WallSwap.exe"; WorkingDir: "{app}"; IconFilename: "{app}\WallSwap.exe"; IconIndex: 0; Tasks: startupicon; Check: KeepShortcut('{userstartup}\WallSwap.lnk')
 
 [Run]
 Filename: "{app}\WallSwap.exe"; Description: "{cm:LaunchProgram,WallSwap}"; Flags: nowait postinstall skipifsilent
@@ -62,3 +62,21 @@ Filename: "{app}\WallSwap.exe"; Description: "{cm:LaunchProgram,WallSwap}"; Flag
 ; Also when the app's switch made it rather than the installer (the [Icons] shortcuts the installer made are removed
 ; anyway). Nothing under Pictures\WallSwap
 Type: files; Name: "{userstartup}\WallSwap.lnk"
+
+[Code]
+var
+  Upgrading: Boolean;
+
+function InitializeSetup(): Boolean;
+begin
+  // A previous WallSwap install has this uninstall key (AppId + "_is1")
+  Upgrading := RegKeyExists(HKCU, 'Software\Microsoft\Windows\CurrentVersion\Uninstall\{5E9E734F-068B-4E01-9571-4206170C824F}_is1');
+  Result := True;
+end;
+
+// On a first install the ticked boxes decide. On an upgrade only shortcuts that still exist are rewritten, so a
+// desktop icon the user deleted, or Start with Windows they turned off, doesn't come back
+function KeepShortcut(Path: String): Boolean;
+begin
+  Result := (not Upgrading) or FileExists(ExpandConstant(Path));
+end;

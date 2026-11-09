@@ -8,6 +8,10 @@ $version = (Select-String -Path pyproject.toml -Pattern '^version\s*=\s*"([^"]+)
 uv run pyinstaller --noconfirm WallSwap.spec
 if ($LASTEXITCODE -ne 0) { throw "PyInstaller failed" }
 
+# Licence texts for everything the build ships (LICENSE.txt and THIRD_PARTY_LICENSES.txt next to the exe)
+uv run python tools\collect_licenses.py dist\WallSwap
+if ($LASTEXITCODE -ne 0) { throw "Collecting licences failed" }
+
 $zip = "dist\WallSwap-$version.zip"
 Remove-Item $zip -ErrorAction SilentlyContinue
 Compress-Archive -Path dist\WallSwap -DestinationPath $zip
@@ -20,5 +24,9 @@ $iscc = @(
 if (-not $iscc) { throw "Inno Setup 6 not found; install it with: winget install --id JRSoftware.InnoSetup -e" }
 & $iscc "/DAppVersion=$version" installer\WallSwap.iss
 if ($LASTEXITCODE -ne 0) { throw "Inno Setup failed" }
+
+# Checksums for the release page, rewritten every build so a stale file never survives
+$sums = Get-FileHash $zip, dist\WallSwap-Setup.exe -Algorithm SHA256 | ForEach-Object { "$($_.Hash.ToLower())  $(Split-Path $_.Path -Leaf)" }
+Set-Content -Path dist\SHA256SUMS.txt -Value $sums -Encoding ascii
 
 Write-Host "Built $zip and dist\WallSwap-Setup.exe ($version)"

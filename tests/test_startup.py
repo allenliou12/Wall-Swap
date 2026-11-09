@@ -240,3 +240,20 @@ def test_a_failing_take_over_never_stops_the_app(monkeypatch):
         raise OSError("PowerShell said: no")
     monkeypatch.setattr(wc, "take_over_startup_shortcut", boom)
     wc.WallSwapApp._take_over_startup_shortcut(object())  # logged, not raised
+
+
+def test_take_over_leaves_a_shortcut_removed_while_it_was_reading(appdata, monkeypatch, tmp_path):
+    # The user turns Start with Windows off while the slow read runs (here: the read fails because the file went)
+    lnk = appdata / wc.STARTUP_SHORTCUT_NAME
+    lnk.write_bytes(b"lnk")
+    exe = tmp_path / "WallSwap" / "WallSwap.exe"
+    monkeypatch.setattr(wc.sys, "executable", str(exe))
+    writes = []
+
+    def read(path):
+        wc.set_start_with_windows(False)
+        raise OSError("the shortcut is gone")
+
+    assert wc.take_over_startup_shortcut(frozen=True, read=read,
+                                         write=lambda path, spec: writes.append(path)) is False
+    assert writes == [] and not lnk.exists()

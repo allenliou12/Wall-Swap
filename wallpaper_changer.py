@@ -810,6 +810,10 @@ def should_repoint(existing_target: str, exe_path: Path | str) -> bool:
     return str(PureWindowsPath(existing_target)).casefold() != str(PureWindowsPath(exe_path)).casefold()
 
 
+# The settings window's switch and the exe's take-over both change Startup\WallSwap.lnk from different threads
+STARTUP_SHORTCUT_LOCK = threading.Lock()
+
+
 def take_over_startup_shortcut(frozen: bool = FROZEN, read=read_shortcut_target, write=write_shortcut) -> bool:
     """Installed exe only: if the user already has Startup\\WallSwap.lnk (say, from a copy run from source),
     point it at this WallSwap.exe. Never creates it and touches no other file (INV-16). Returns True if rewritten."""
@@ -826,7 +830,12 @@ def take_over_startup_shortcut(frozen: bool = FROZEN, read=read_shortcut_target,
         existing = ""
     if not should_repoint(existing, exe):
         return False
-    write(path, startup_shortcut_spec(exe, SCRIPT_DIR / "wallpaper_changer.py", ICON_PATH, False, frozen=True))
+    # The read takes seconds; the user may have turned Start with Windows off meanwhile. Check again under the
+    # same lock the switch uses, so the take-over never brings back a shortcut that was just removed (INV-16)
+    with STARTUP_SHORTCUT_LOCK:
+        if not path.exists():
+            return False
+        write(path, startup_shortcut_spec(exe, SCRIPT_DIR / "wallpaper_changer.py", ICON_PATH, False, frozen=True))
     log.info(f"Start with Windows shortcut now starts {exe} (was {existing or 'unreadable'})")
     return True
 
@@ -834,12 +843,13 @@ def take_over_startup_shortcut(frozen: bool = FROZEN, read=read_shortcut_target,
 def set_start_with_windows(enabled: bool, write=write_shortcut) -> None:
     """Create or remove Startup\\WallSwap.lnk; that exact file is the only one ever deleted (INV-16)."""
     path = startup_shortcut_path()
-    if not enabled:
-        path.unlink(missing_ok=True)
-        return
     exe = Path(sys.executable)
-    write(path, startup_shortcut_spec(exe, SCRIPT_DIR / "wallpaper_changer.py", ICON_PATH,
-                                      exe.with_name("pythonw.exe").exists(), frozen=FROZEN))
+    with STARTUP_SHORTCUT_LOCK:
+        if not enabled:
+            path.unlink(missing_ok=True)
+            return
+        write(path, startup_shortcut_spec(exe, SCRIPT_DIR / "wallpaper_changer.py", ICON_PATH,
+                                          exe.with_name("pythonw.exe").exists(), frozen=FROZEN))
 
 
 # ─── Image Validation ─────────────────────────────────────────
