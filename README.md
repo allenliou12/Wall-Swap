@@ -77,3 +77,5 @@ If the lock screen doesn't change, check that it's set to "Picture" rather than 
 ## Credits
 
 Images come from Wallhaven and the Met's Open Access collection (CC0) and belong to their artists.
+
+The app icon is made from Microsoft's [Fluent Emoji](https://github.com/microsoft/fluentui-emoji) (MIT); see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).

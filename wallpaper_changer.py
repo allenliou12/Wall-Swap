@@ -880,13 +880,14 @@ class WallSwapApp:
         """Load the app icon for the system tray."""
         size = 64
         try:
-            img = Image.open(str(ICON_PATH))
+            img = Image.open(str(ICON_PATH)).convert("RGBA")
             img = img.resize((size, size), Image.LANCZOS)
             if self.paused:
-                # Tint orange when paused
-                img = img.convert("RGBA")
-                overlay = Image.new("RGBA", (size, size), (255, 165, 0, 100))
-                img = Image.alpha_composite(img, overlay)
+                # Tint orange when paused, only where the icon is drawn (not its transparent corners)
+                tint = Image.new("RGBA", (size, size), (255, 150, 0, 255))
+                tinted = Image.blend(img, tint, 0.45)
+                tinted.putalpha(img.getchannel("A"))
+                img = tinted
             return img
         except Exception:
             # Fallback if icon file is missing
