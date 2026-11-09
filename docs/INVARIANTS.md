@@ -68,9 +68,11 @@ IDs are stable: never renumber, retire with a note.
   the percentages the settings window shows are the real shares. An empty search list never falls back to other
   searches. Code: `source_available` `:1075`, `source_weights` `:1104`, `get_new_wallpaper` `:1140`, `:848`.
 - **INV-16 · Outside its own folder, WallSwap writes only `Startup\WallSwap.lnk`,** and only when the user flips
-  Start with Windows; that exact file is the only one it deletes there. The shortcut is written by an absolute-path
-  PowerShell (Windows folder from the OS), with paths passed only through environment variables. Code:
-  `startup_shortcut_path` `:716`, `write_shortcut` `:744`, `set_start_with_windows` `:771`.
+  Start with Windows or, in the packaged exe, to re-point one that already exists at this exe (never creating it);
+  that exact file is the only one it deletes there. The shortcut is written by an absolute-path PowerShell (Windows
+  folder from the OS), with paths passed only through environment variables. (The installer, a separate program,
+  also writes it when its sign-in box is ticked.) Code: `startup_shortcut_path` `:734`, `write_shortcut` `:762`,
+  `take_over_startup_shortcut` `:813`, `set_start_with_windows` `:834`.
 
 ## Hazards
 

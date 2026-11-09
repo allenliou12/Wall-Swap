@@ -68,3 +68,27 @@ def test_real_frozen_shortcut_has_no_arguments(tmp_path):
     assert read["arguments"] == ""
     assert Path(read["working_dir"]) == app
     assert read["icon"] == f"{exe},0"
+
+
+def test_real_take_over_of_a_source_shortcut(tmp_path, monkeypatch):
+    """An old pythonw shortcut in a (temp) Startup folder is re-pointed at the exe and reads back Unicode-clean."""
+    monkeypatch.setenv("APPDATA", str(tmp_path / "AppData 日本語"))
+    lnk = wc.startup_shortcut_path()
+    lnk.parent.mkdir(parents=True)
+    src = tmp_path / "src 日本語"
+    src.mkdir()
+    (src / "pythonw.exe").write_bytes(b"")
+    wc.write_shortcut(lnk, wc.startup_shortcut_spec(src / "pythonw.exe", src / "wallpaper_changer.py",
+                                                    src / "wallswap.ico", pythonw_exists=True))
+    assert wc.read_shortcut_target(lnk) == str(src / "pythonw.exe")
+
+    exe = tmp_path / "Programs 日本語" / "WallSwap" / "WallSwap.exe"
+    exe.parent.mkdir(parents=True)
+    exe.write_bytes(b"")
+    monkeypatch.setattr(wc.sys, "executable", str(exe))
+    assert wc.take_over_startup_shortcut(frozen=True) is True
+    read = _read_back(lnk)
+    assert (Path(read["target"]), read["arguments"], Path(read["working_dir"]), read["icon"]) == \
+        (exe, "", exe.parent, f"{exe},0")
+    assert wc.take_over_startup_shortcut(frozen=True) is False  # already this exe: nothing to do
+    assert sorted(p.name for p in lnk.parent.iterdir()) == [wc.STARTUP_SHORTCUT_NAME]

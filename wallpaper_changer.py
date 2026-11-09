@@ -640,7 +640,7 @@ def is_fullscreen_app_running() -> bool:
 # Writes the .lnk through the Unicode IShellLinkW interface (WScript.Shell turns characters outside the
 # ANSI code page into "?"), then prints the target read back from the saved file as UTF-8.
 # Paths reach PowerShell only through the WS_* environment variables, never pasted into the script text.
-SHORTCUT_PS = r"""
+SHORTCUT_TYPE_PS = r"""
 $ErrorActionPreference = 'Stop'
 [Console]::OutputEncoding = [Text.Encoding]::UTF8
 Add-Type -TypeDefinition @'
@@ -694,7 +694,13 @@ public static class WallSwapShortcut {
     }
 }
 '@
+"""
+SHORTCUT_PS = SHORTCUT_TYPE_PS + r"""
 [WallSwapShortcut]::Save($env:WS_LNK, $env:WS_TARGET, $env:WS_ARGS, $env:WS_WD, $env:WS_ICON)
+[WallSwapShortcut]::Target($env:WS_LNK)
+"""
+# Reads a shortcut's stored target the same Unicode-safe way, without changing the file
+SHORTCUT_READ_PS = SHORTCUT_TYPE_PS + r"""
 [WallSwapShortcut]::Target($env:WS_LNK)
 """
 
@@ -778,6 +784,51 @@ def write_shortcut(path: Path, spec: ShortcutSpec):
     saved_target = (done.stdout or b"").decode("utf-8-sig", errors="replace").strip()
     if saved_target != spec.target:
         raise OSError(f"Startup shortcut points to {saved_target!r}, not {spec.target!r}: {path}")
+
+
+def read_shortcut_target(path: Path) -> str:
+    """The target stored in a .lnk, read through IShellLinkW; raises OSError on failure."""
+    powershell = windows_directory() / "System32/WindowsPowerShell/v1.0/powershell.exe"
+    try:
+        done = subprocess.run(
+            [str(powershell), "-NoProfile", "-NonInteractive", "-Command", SHORTCUT_READ_PS],
+            env={**os.environ, "WS_LNK": str(path)},
+            creationflags=CREATE_NO_WINDOW, capture_output=True, check=True, timeout=15,
+        )
+    except subprocess.TimeoutExpired:
+        raise OSError("PowerShell took longer than 15 seconds") from None
+    except subprocess.CalledProcessError as e:
+        raise OSError(f"PowerShell said: {_last_line(e.stderr) or f'exit code {e.returncode}'}") from None
+    return (done.stdout or b"").decode("utf-8-sig", errors="replace").strip()
+
+
+def should_repoint(existing_target: str, exe_path: Path | str) -> bool:
+    """Should the Startup shortcut be re-pointed at this exe? Yes unless it already targets it (Windows paths
+    compare case-insensitively); an empty or unreadable target also gets re-pointed."""
+    if not existing_target.strip():
+        return True
+    return str(PureWindowsPath(existing_target)).casefold() != str(PureWindowsPath(exe_path)).casefold()
+
+
+def take_over_startup_shortcut(frozen: bool = FROZEN, read=read_shortcut_target, write=write_shortcut) -> bool:
+    """Installed exe only: if the user already has Startup\\WallSwap.lnk (say, from a copy run from source),
+    point it at this WallSwap.exe. Never creates it and touches no other file (INV-16). Returns True if rewritten."""
+    if not frozen:
+        return False  # running from source never re-points the shortcut
+    path = startup_shortcut_path()
+    if not path.exists():
+        return False  # the user hasn't turned Start with Windows on
+    exe = Path(sys.executable)
+    try:
+        existing = read(path)
+    except OSError as e:
+        log.warning(f"Couldn't read the Start with Windows shortcut, rewriting it: {e}")
+        existing = ""
+    if not should_repoint(existing, exe):
+        return False
+    write(path, startup_shortcut_spec(exe, SCRIPT_DIR / "wallpaper_changer.py", ICON_PATH, False, frozen=True))
+    log.info(f"Start with Windows shortcut now starts {exe} (was {existing or 'unreadable'})")
+    return True
 
 
 def set_start_with_windows(enabled: bool, write=write_shortcut) -> None:
@@ -1550,6 +1601,14 @@ class WallSwapApp:
             self.settings_window = None
         self.root.quit()
 
+    def _take_over_startup_shortcut(self):
+        """Background thread: re-point an old Start with Windows shortcut at this exe (frozen only)."""
+        try:
+            take_over_startup_shortcut()
+        except Exception:
+            # HZ-2: logged with the traceback, not hidden; a bad shortcut must never stop the app from starting
+            log.exception("Couldn't update the Start with Windows shortcut")
+
     def _on_tray_ready(self, icon):
         """pystray setup thread: show the icon, then start the timer (so it never notifies an icon that isn't up)."""
         icon.visible = True
@@ -1618,6 +1677,9 @@ class WallSwapApp:
         # Only now, after the single-instance mutex, may an upgraded settings.json be written
         if not settings.persist_migration():
             log.warning("Couldn't save the upgraded settings.json; using the upgraded settings in memory for now")
+
+        # Off the main thread: reading the shortcut starts PowerShell, which would hold up the tray for a second
+        threading.Thread(target=self._take_over_startup_shortcut, daemon=True).start()
 
         # The Tk root comes before the tray, so the process is DPI-aware before pystray creates its windows
         self.root = ctk.CTk()

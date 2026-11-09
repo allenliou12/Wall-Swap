@@ -171,3 +171,72 @@ def test_failed_powershell_gives_a_short_reason_not_the_script(appdata, monkeypa
     assert "WallSwapShortcut" not in message and len(message) < 250
     if isinstance(failure, subprocess.CalledProcessError):
         assert "Access to the path is denied." in message
+
+
+# ── Taking over an existing Start with Windows shortcut (installed exe only) ──
+
+@pytest.mark.parametrize("existing, expected", [
+    (r"C:\Apps\WallSwap\WallSwap.exe", False),  # already this exe
+    (r"c:\apps\wallswap\WALLSWAP.EXE", False),  # Windows paths ignore case
+    (r"C:\src\WallSwap\.venv\Scripts\pythonw.exe", True),  # an older copy run from source
+    ("", True),  # empty or unreadable
+    ("   ", True),
+])
+def test_should_repoint(existing, expected):
+    assert wc.should_repoint(existing, r"C:\Apps\WallSwap\WallSwap.exe") is expected
+
+
+def _take_over(monkeypatch, tmp_path, *, frozen, existing):
+    exe = tmp_path / "WallSwap" / "WallSwap.exe"
+    monkeypatch.setattr(wc.sys, "executable", str(exe))
+    reads, writes = [], []
+
+    def read(path):
+        reads.append(path)
+        if isinstance(existing, Exception):
+            raise existing
+        return existing
+
+    changed = wc.take_over_startup_shortcut(frozen=frozen, read=read,
+                                            write=lambda path, spec: writes.append((path, spec)))
+    return exe, changed, reads, writes
+
+
+def test_take_over_never_runs_from_source(appdata, monkeypatch, tmp_path):
+    (appdata / wc.STARTUP_SHORTCUT_NAME).write_bytes(b"lnk")
+    _, changed, reads, writes = _take_over(monkeypatch, tmp_path, frozen=False, existing=r"C:\old\pythonw.exe")
+    assert not changed and reads == [] and writes == []
+
+
+def test_take_over_never_creates_the_shortcut(appdata, monkeypatch, tmp_path):
+    _, changed, reads, writes = _take_over(monkeypatch, tmp_path, frozen=True, existing=r"C:\old\pythonw.exe")
+    assert not changed and reads == [] and writes == []
+    assert list(appdata.iterdir()) == []
+
+
+def test_take_over_rewrites_an_old_target(appdata, monkeypatch, tmp_path):
+    (appdata / wc.STARTUP_SHORTCUT_NAME).write_bytes(b"lnk")
+    exe, changed, _, writes = _take_over(monkeypatch, tmp_path, frozen=True, existing=r"C:\old\pythonw.exe")
+    (path, spec), = writes
+    assert changed and path == appdata / wc.STARTUP_SHORTCUT_NAME
+    assert spec == wc.ShortcutSpec(target=str(exe), arguments="", working_dir=str(exe.parent), icon=f"{exe},0")
+
+
+def test_take_over_leaves_a_current_shortcut_alone(appdata, monkeypatch, tmp_path):
+    (appdata / wc.STARTUP_SHORTCUT_NAME).write_bytes(b"lnk")
+    exe = tmp_path / "WallSwap" / "WallSwap.exe"
+    _, changed, reads, writes = _take_over(monkeypatch, tmp_path, frozen=True, existing=str(exe).upper())
+    assert not changed and len(reads) == 1 and writes == []
+
+
+def test_take_over_rewrites_an_unreadable_shortcut(appdata, monkeypatch, tmp_path):
+    (appdata / wc.STARTUP_SHORTCUT_NAME).write_bytes(b"not a shortcut")
+    _, changed, _, writes = _take_over(monkeypatch, tmp_path, frozen=True, existing=OSError("bad"))
+    assert changed and len(writes) == 1
+
+
+def test_a_failing_take_over_never_stops_the_app(monkeypatch):
+    def boom():
+        raise OSError("PowerShell said: no")
+    monkeypatch.setattr(wc, "take_over_startup_shortcut", boom)
+    wc.WallSwapApp._take_over_startup_shortcut(object())  # logged, not raised
