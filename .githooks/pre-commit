@@ -1,0 +1,38 @@
+#!/bin/sh
+# Gates on every commit, for every writer (Codex and plain git too). Enable per clone with:
+#   git config core.hooksPath .githooks
+# Bypass only on purpose, and only allen: git commit --no-verify.
+# Checks the WORKING TREE (incl. untracked files), not the staged snapshot: no stash, because other writers may share
+# this checkout. Each check is skipped when its script is missing (hooksPath is shared by every worktree, and an older
+# branch may not have it); a missing tool fails open with a WARN.
+cd "$(git rev-parse --show-toplevel)" || exit 1
+log=$(mktemp)
+status=0
+if command -v node >/dev/null 2>&1; then
+  if [ -f .claude/scripts/sync-runner-copies.mjs ] && ! node .claude/scripts/sync-runner-copies.mjs >"$log" 2>&1; then
+    echo "pre-commit: sync-runner-copies failed:"; cat "$log"; status=1
+  fi
+  if [ -f .claude/scripts/check-doc-links.mjs ] && ! node .claude/scripts/check-doc-links.mjs >"$log" 2>&1; then
+    echo "pre-commit: check-doc-links failed:"; grep '^ERRORS\|^SUMMARY' "$log" || tail -20 "$log"; status=1
+  fi
+  if [ -f .claude/scripts/check-record.mjs ]; then
+    if ! node .claude/scripts/check-record.mjs --changed >"$log" 2>&1; then
+      echo "pre-commit: check-record failed:"; out=$(grep '^FLAG ' "$log")
+      [ -n "$out" ] && echo "$out" || tail -20 "$log"; status=1
+    fi
+    grep '^WARN ' "$log"
+  fi
+else
+  echo "WARN pre-commit: node not found, doc checks skipped"
+fi
+# Python checks only when Python or the project file is staged.
+if [ -n "$(git diff --cached --name-only -- '*.py' pyproject.toml uv.lock)" ]; then
+  if command -v uv >/dev/null 2>&1; then
+    if ! uv run ruff check . >"$log" 2>&1; then echo "pre-commit: ruff failed:"; tail -30 "$log"; status=1; fi
+    if ! uv run pytest -q >"$log" 2>&1; then echo "pre-commit: pytest failed:"; tail -30 "$log"; status=1; fi
+  else
+    echo "WARN pre-commit: uv not found, ruff and pytest skipped"
+  fi
+fi
+rm -f "$log"
+exit $status

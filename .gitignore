@@ -16,7 +16,19 @@ wheels/
 # Editors & OS
 .vscode/
 .idea/
-.claude/
 Thumbs.db
 desktop.ini
 .DS_Store
+
+# Claude Code: the workflow in .claude/ is tracked; personal and generated parts are not
+.claude/settings.local.json
+.claude/worktrees/
+.claude/skills/gitnexus*/
+# Generated: Codex copies of .claude/commands (sync-runner-copies.mjs) and GitNexus skills
+.agents/
+
+# Tool caches and scratch
+.gitnexus/
+.scratch/
+.ruff_cache/
+.pytest_cache/
