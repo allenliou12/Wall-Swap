@@ -13,12 +13,12 @@ Everything is 2560x1440 or bigger and landscape. It doesn't repeat images, and i
 
 Windows 10/11, no Python needed. Both downloads are on the Releases page.
 
-- **Installer (recommended):** run `WallSwap-Setup.exe`. It installs just for you (no admin prompt) into `AppData\Local\Programs\WallSwap`, adds WallSwap to the Start menu, and can add a desktop shortcut. Uninstall it from Settings → Apps like anything else. Installing a newer version over it upgrades in place.
+- **Installer (recommended):** run `WallSwap-Setup.exe`. It installs just for you (no admin prompt) into `AppData\Local\Programs\WallSwap`, and adds WallSwap to the Start menu. Two boxes, both ticked to start with, add a desktop shortcut and start WallSwap when you sign in (the same as the Start with Windows switch, which you can turn off later). Uninstall it from Settings → Apps like anything else. Installing a newer version over it upgrades in place.
 - **Portable zip:** unzip `WallSwap-<version>.zip` somewhere that will stay put (for example `Documents\WallSwap`) and run `WallSwap.exe`. Keep the `_internal` folder next to it.
 
 Neither is code-signed, so Windows SmartScreen may say "Windows protected your PC" the first time. Click **More info**, then **Run anyway**. If you'd rather not, run it from source as shown below.
 
-Start with Windows is the switch in the settings window; the installer doesn't turn it on. Its shortcut points at wherever `WallSwap.exe` is, so if you move the portable folder, turn the switch off and on again. Uninstalling removes that shortcut too, but never touches `Pictures\WallSwap` (your settings, favourites and downloads); delete that folder yourself if you want them gone.
+Start with Windows is also the switch in the settings window. Its shortcut points at wherever `WallSwap.exe` is, so if you move the portable folder, turn the switch off and on again. If you already had Start with Windows on from an older copy (say, one run from source), the installed or portable exe takes that shortcut over the first time it runs. Uninstalling removes that shortcut too, but never touches `Pictures\WallSwap` (your settings, favourites and downloads); delete that folder yourself if you want them gone.
 
 ## Running it from source
 

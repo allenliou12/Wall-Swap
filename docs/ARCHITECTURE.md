@@ -56,8 +56,12 @@ the exe itself with no arguments.
 
 `installer\WallSwap.iss` (Inno Setup) wraps that folder into `dist\WallSwap-Setup.exe`: per-user, no admin, into
 `%LOCALAPPDATA%\Programs\WallSwap`, fixed `AppId` so a newer version upgrades in place. `AppMutex` matches the app's
-single-instance mutex, so Setup and the uninstaller ask the user to quit a running WallSwap first. The installer never creates
-`Startup\WallSwap.lnk`; the uninstaller deletes it and never touches `Pictures\WallSwap`. `build.ps1` builds the exe,
+single-instance mutex, so Setup and the uninstaller ask the user to quit a running WallSwap first. Two ticked-by-default tasks add a
+desktop shortcut and `{userstartup}\WallSwap.lnk`, the same file and target as the app's frozen
+`startup_shortcut_spec`; unticked, an existing one is left alone. The uninstaller deletes `Startup\WallSwap.lnk`
+(whoever made it) and never touches `Pictures\WallSwap`. At startup the frozen app runs `take_over_startup_shortcut`
+on a background thread: an existing `Startup\WallSwap.lnk` whose target isn't this exe (`should_repoint`) is
+rewritten to it; it never creates the file. `build.ps1` builds the exe,
 the portable zip and the installer.
 
 ## One wallpaper change, end to end

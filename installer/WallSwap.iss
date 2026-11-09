@@ -2,9 +2,10 @@
 ; Build both with:  powershell -ExecutionPolicy Bypass -File build.ps1
 ; or just this:     ISCC.exe /DAppVersion=0.1.0 installer\WallSwap.iss
 ;
-; Per-user install, no admin prompt. The installer never creates Startup\WallSwap.lnk (the app's own Start with
-; Windows switch owns it), but the uninstaller removes it so an uninstalled app doesn't start at sign-in.
-; Pictures\WallSwap (settings, favourites, downloads) is never touched.
+; Per-user install, no admin prompt. Two ticked-by-default boxes: a desktop shortcut, and "Start WallSwap when I sign
+; in", which writes the very shortcut the app's own Start with Windows switch manages (same file, same target), so
+; the switch shows On and can turn it off. Unticking that box never deletes an existing one. The uninstaller removes
+; both shortcuts and the Start menu entry; Pictures\WallSwap (settings, favourites, downloads) is never touched.
 
 #ifndef AppVersion
   #define AppVersion "0.1.0"
@@ -37,7 +38,8 @@ AppMutex=WallSwap_SingleInstance
 CloseApplications=yes
 
 [Tasks]
-Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
+Name: "desktopicon"; Description: "Create a desktop shortcut"; GroupDescription: "{cm:AdditionalIcons}"
+Name: "startupicon"; Description: "Start WallSwap when I sign in"; GroupDescription: "{cm:AdditionalIcons}"
 
 [InstallDelete]
 ; An upgrade replaces the bundled runtime wholesale, so files a newer build no longer ships don't linger
@@ -48,11 +50,15 @@ Source: "..\dist\WallSwap\*"; DestDir: "{app}"; Flags: ignoreversion recursesubd
 
 [Icons]
 Name: "{autoprograms}\WallSwap"; Filename: "{app}\WallSwap.exe"
-Name: "{autodesktop}\WallSwap"; Filename: "{app}\WallSwap.exe"; Tasks: desktopicon
+Name: "{userdesktop}\WallSwap"; Filename: "{app}\WallSwap.exe"; Tasks: desktopicon
+; {userstartup}\WallSwap.lnk is startup_shortcut_path(); target, no arguments, working dir and icon match
+; startup_shortcut_spec(..., frozen=True) in wallpaper_changer.py. Keep the two in step.
+Name: "{userstartup}\WallSwap"; Filename: "{app}\WallSwap.exe"; WorkingDir: "{app}"; IconFilename: "{app}\WallSwap.exe"; IconIndex: 0; Tasks: startupicon
 
 [Run]
 Filename: "{app}\WallSwap.exe"; Description: "{cm:LaunchProgram,WallSwap}"; Flags: nowait postinstall skipifsilent
 
 [UninstallDelete]
-; Only the app's own Start with Windows shortcut; nothing under Pictures\WallSwap
+; Also when the app's switch made it rather than the installer (the [Icons] shortcuts the installer made are removed
+; anyway). Nothing under Pictures\WallSwap
 Type: files; Name: "{userstartup}\WallSwap.lnk"
