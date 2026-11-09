@@ -1,0 +1,14 @@
+[project]
+name = "wallswap"
+version = "0.1.0"
+description = "Windows tray app that rotates 1440p+ wallpapers from Wallhaven, the Met museum and your own folders"
+requires-python = ">=3.13"
+dependencies = [
+    "pillow>=12.1.1",
+    "pystray>=0.19.5",
+    "requests>=2.32.5",
+    "winrt-runtime>=3.2.1",
+    "winrt-windows-foundation>=3.2.1",
+    "winrt-windows-storage>=3.2.1",
+    "winrt-windows-system-userprofile>=3.2.1",
+]
