@@ -64,6 +64,7 @@ ICON_PATH = BUNDLE_DIR / "wallswap.ico"
 WALLPAPER_DIR = Path.home() / "Pictures" / "WallSwap"
 LOG_FILE = WALLPAPER_DIR / "wallswap.log"
 HISTORY_FILE = WALLPAPER_DIR / "seen_ids.txt"
+BLOCKED_FILE = WALLPAPER_DIR / "blocked.txt"  # Never Show Again: one image per line, never trimmed
 SETTINGS_FILE = WALLPAPER_DIR / "settings.json"
 FAVOURITES_DIR = WALLPAPER_DIR / "Favourites"
 # The most "Match my screen" ever asks an image to be. A smaller screen asks only for its own size (see
@@ -514,6 +515,7 @@ class Wallpaper:
     source: str             # a key of SOURCE_LABELS
     title: str
     url: str | None = None  # web page for the image, if any
+    key: str | None = None  # what Never Show Again blocks: a Wallhaven id, "met_<id>" or a local file's path
 
 
 def load_seen_ids() -> set[str]:
@@ -536,6 +538,31 @@ def save_seen_ids(ids):
         return
     history += new
     HISTORY_FILE.write_text("\n".join(history[-MAX_SEEN_IDS:]))
+
+
+def load_blocked() -> set[str]:
+    """The images Never Show Again has blocked. The user may edit the file; blank lines and spaces are ignored."""
+    try:
+        lines = BLOCKED_FILE.read_text(encoding="utf-8").splitlines()
+    except FileNotFoundError:
+        return set()
+    except (OSError, UnicodeDecodeError) as e:
+        log.warning(f"Can't read {BLOCKED_FILE.name}, nothing is blocked this time: {e}")
+        return set()
+    return {line.strip() for line in lines if line.strip()}
+
+
+def block_image(key: str) -> None:
+    """Add one image to blocked.txt (appended, so the user's own edits stay). Raises OSError if it can't."""
+    if key in load_blocked():
+        return
+    with open(BLOCKED_FILE, "a", encoding="utf-8") as f:
+        f.write(key + "\n")
+
+
+def is_own_download(path: Path) -> bool:
+    """A file WallSwap downloaded itself: wallswap_*.jpg directly in its folder (INV-9)."""
+    return path.parent == WALLPAPER_DIR and path.name.startswith("wallswap_") and path.suffix == ".jpg"
 
 
 def save_seen_id(wp_id: str):
@@ -1089,7 +1116,7 @@ def fetch_from_wallhaven(queries: list[str], sorting: str | None = None,
             return None
 
         random.shuffle(wallpapers)
-        seen = load_seen_ids()
+        seen = load_seen_ids() | load_blocked()
 
         for wp in wallpapers:
             wp_id = wp.get("id", "")
@@ -1116,7 +1143,7 @@ def fetch_from_wallhaven(queries: list[str], sorting: str | None = None,
                 tmp_path.write_bytes(img_resp.content)
                 save_seen_id(wp_id)
                 return Wallpaper(str(tmp_path), source, f"Wallhaven {wp_id} (search: {query})",
-                                 wp.get("url"))
+                                 wp.get("url"), key=wp_id)
 
     except Exception as e:
         log.warning(f"Wallhaven fetch failed: {e}")
@@ -1138,7 +1165,7 @@ def fetch_from_museum() -> Wallpaper | None:
             else:
                 log.warning(f"The Met returned {resp.status_code}")
         random.shuffle(object_ids)
-        seen = load_seen_ids()
+        seen = load_seen_ids() | load_blocked()
         checked = 0
         decided = []  # objects that got a definite yes/no, never to be checked again
 
@@ -1209,7 +1236,7 @@ def _try_museum_object(obj_id: int) -> Wallpaper | None:
         artist = obj.get("artistDisplayName") or "Unknown artist"
         title = f"{obj.get('title') or 'Untitled'} by {artist}"
         log.info(f"Met painting: {title} ({w}x{h})")
-        return Wallpaper(str(tmp_path), "museum", title, obj.get("objectURL"))
+        return Wallpaper(str(tmp_path), "museum", title, obj.get("objectURL"), key=f"met_{obj_id}")
     tmp_path.unlink(missing_ok=True)
     return None
 
@@ -1237,6 +1264,8 @@ def pick_local_wallpaper(folders: list[Path]) -> Wallpaper | None:
         for p in folder.iterdir()
         if p.is_file() and p.suffix.lower() in LOCAL_EXTENSIONS
     ]
+    blocked = load_blocked()
+    candidates = [p for p in candidates if str(p) not in blocked]
     if not candidates:
         return None
 
@@ -1260,7 +1289,7 @@ def pick_local_wallpaper(folders: list[Path]) -> Wallpaper | None:
             if is_landscape_wallpaper(path):
                 LOCAL_HISTORY_FILE.write_text("\n".join(seen), encoding="utf-8")
                 log.info(f"Picked local wallpaper: {path}")
-                return Wallpaper(str(path), "local", path.name)
+                return Wallpaper(str(path), "local", path.name, key=str(path))
 
     LOCAL_HISTORY_FILE.write_text("\n".join(seen), encoding="utf-8")
     return None
@@ -1578,6 +1607,39 @@ class WallSwapApp:
         except OSError as e:
             self.notify(f"Couldn't save it: {e}")
 
+    def never_show_again(self, _=None):
+        """Block the current wallpaper for good, switch to a new one, then delete the blocked download."""
+        wallpaper = self.current
+        if not wallpaper or not wallpaper.key:
+            self.notify("There's no current wallpaper to block yet.")
+            return
+        try:
+            block_image(wallpaper.key)
+        except OSError as e:
+            self.notify(f"Couldn't block it: {e}")
+            return
+        # Not the current wallpaper any more, so the change below doesn't put it in the Previous history
+        self.current = None
+        self.history = collections.deque((w for w in self.history if w.key != wallpaper.key),
+                                         maxlen=HISTORY_LENGTH)
+        if self.icon:
+            self.icon.title = f"WallSwap {APP_VERSION}"
+        self.refresh_menu()
+        self.notify(f"{wallpaper.title} won't be shown again. To undo, remove its line from {BLOCKED_FILE.name}.",
+                    "Blocked")
+        self.elapsed = 0
+        threading.Thread(target=self._replace_blocked, args=(wallpaper,), daemon=True).start()
+
+    def _replace_blocked(self, wallpaper: Wallpaper):
+        self._change_wallpaper()
+        # Only WallSwap's own download is deleted; a file from the user's folders is blocked, never touched (INV-8)
+        path = Path(wallpaper.path)
+        if wallpaper.source != "local" and is_own_download(path):
+            try:
+                path.unlink(missing_ok=True)
+            except OSError as e:
+                log.warning(f"Couldn't delete the blocked wallpaper {path.name}: {e}")
+
     def open_source(self, _=None):
         """Show what the current wallpaper is, and open its web page (or its file)."""
         wallpaper = self.current
@@ -1865,6 +1927,7 @@ class WallSwapApp:
             pystray.MenuItem("⏮ Previous Wallpaper", self.previous_wallpaper,
                              enabled=lambda item: bool(self.history)),
             pystray.MenuItem("⭐ Favourite", self.save_favourite, enabled=has_current),
+            pystray.MenuItem("🚫 Never Show Again", self.never_show_again, enabled=has_current),
             pystray.MenuItem("🔗 Details", self.open_source, enabled=has_current),
             pystray.Menu.SEPARATOR,
             pystray.MenuItem("⏸ Pause", self.toggle_pause, checked=lambda item: self.paused),

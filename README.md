@@ -71,6 +71,7 @@ Double-click the icon to skip to the next wallpaper. Right-click for:
 - Next Wallpaper
 - Previous Wallpaper: goes back one, through the last 20 shown since WallSwap started
 - Favourite: copies the current one to `Pictures\WallSwap\Favourites`
+- Never Show Again: blocks the current wallpaper for good and switches to a new one. A downloaded image is deleted; a file from your own folders is only skipped from then on, never deleted. To undo, remove its line from `Pictures\WallSwap\blocked.txt`
 - Details: opens the wallpaper's Wallhaven/Met page, or shows the file if it's a local one
 - Pause
 - Interval, Sources, My Folders: quick versions of the same settings

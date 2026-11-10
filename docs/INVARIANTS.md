@@ -58,6 +58,10 @@ IDs are stable: never renumber, retire with a note.
 
 - **INV-11 · No repeats until a source runs out.** Downloaded ids are remembered (newest `MAX_SEEN_IDS` = 5000);
   local images cycle through every file before repeating. Code: `:500-523`, `pick_local_wallpaper` `:1023`.
+- **INV-17 · A blocked image is never shown again.** Never Show Again appends the image's key (Wallhaven id,
+  `met_<id>` or a local file's path) to `blocked.txt`, which is never trimmed; every source skips blocked keys. It
+  deletes only WallSwap's own download of that image (`is_own_download`, the INV-9 pattern), never a file in the
+  user's folders (INV-8). Code: `load_blocked`, `block_image`, `never_show_again`. Tests: `tests/test_blocked.py`.
 - **INV-12 · A temporary failure never marks an image as seen.** Met 429/5xx and network errors skip the painting
   for now; only a definite yes/no is recorded. Code: `_museum_get` `:961`, `fetch_from_museum` `:933-954`.
 - **INV-13 · One wallpaper change at a time.** A change requested while one is running is dropped. Code:
