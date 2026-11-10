@@ -21,8 +21,8 @@ def test_failed_changes_retry_fast_five_times_then_slowly():
     assert waits == [wc.RETRY_SECONDS] * wc.FAST_RETRIES + [wc.SLOW_RETRY_SECONDS] * 2
 
 
-def test_a_busy_change_plans_nothing():
-    assert wc.retry_plan("busy", 2) == (None, 0)
+def test_nothing_to_fetch_goes_back_to_the_normal_interval():
+    assert wc.retry_plan("nothing", 2) == (None, 0)
 
 
 @pytest.fixture

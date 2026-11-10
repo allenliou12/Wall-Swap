@@ -12,6 +12,8 @@ def clean_block_file():
     wc.BLOCKED_FILE.unlink(missing_ok=True)
     yield
     wc.BLOCKED_FILE.unlink(missing_ok=True)
+    for path in wc.WALLPAPER_DIR.glob("wallswap_*.jpg"):
+        path.unlink()
 
 
 # ── The file ──
@@ -126,11 +128,10 @@ def test_blocking_a_download_switches_wallpaper_and_deletes_only_that_file(app, 
     assert app.current.key == "def"
     assert list(app.history) == []  # the blocked one can't come back through Previous
     assert "won't be shown again" in app.notes[0]
-    other.unlink()
 
 
 def test_blocking_a_local_file_never_deletes_it(app, monkeypatch, tmp_path):
-    mine = tmp_path / "wallswap_mine.jpg"  # even a name that looks like a download
+    mine = wc.WALLPAPER_DIR / "wallswap_mine.jpg"  # even a file that looks exactly like a download
     mine.write_bytes(b"x")
     app.current = wc.Wallpaper(str(mine), "local", mine.name, key=str(mine))
     monkeypatch.setattr(wc, "get_new_wallpaper", lambda: None)

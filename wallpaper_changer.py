@@ -18,6 +18,7 @@ import dataclasses
 import filecmp
 import io
 import json
+import locale
 import logging
 import os
 import queue
@@ -595,21 +596,31 @@ def save_seen_ids(ids):
 def load_blocked() -> set[str]:
     """The images Never Show Again has blocked. The user may edit the file; blank lines and spaces are ignored."""
     try:
-        lines = BLOCKED_FILE.read_text(encoding="utf-8").splitlines()
+        raw = BLOCKED_FILE.read_bytes()
     except FileNotFoundError:
         return set()
-    except (OSError, UnicodeDecodeError) as e:
+    except OSError as e:
         log.warning(f"Can't read {BLOCKED_FILE.name}, nothing is blocked this time: {e}")
         return set()
-    return {line.strip() for line in lines if line.strip()}
+    try:
+        text = raw.decode("utf-8-sig")  # -sig: Notepad may have put a byte-order mark in front
+    except UnicodeDecodeError:
+        # Saved in the PC's own (ANSI) encoding: read it that way rather than block nothing at all
+        text = raw.decode(locale.getpreferredencoding(False), errors="replace")
+    return {line.strip() for line in text.splitlines() if line.strip()}
 
 
 def block_image(key: str) -> None:
     """Add one image to blocked.txt (appended, so the user's own edits stay). Raises OSError if it can't."""
     if key in load_blocked():
         return
+    try:
+        # A hand-edited file may end without a line break; the new line must not join the last one
+        unfinished = not BLOCKED_FILE.read_bytes().endswith((b"\n", b"\r"))
+    except FileNotFoundError:
+        unfinished = False
     with open(BLOCKED_FILE, "a", encoding="utf-8") as f:
-        f.write(key + "\n")
+        f.write(("\n" if unfinished else "") + key + "\n")
 
 
 def is_own_download(path: Path) -> bool:
@@ -1220,12 +1231,14 @@ def fetch_from_wallhaven(queries: list[str], sorting: str | None = None,
                 and fits_screen(wp.get("dimension_x", 0), wp.get("dimension_y", 0))  # not too small or portrait
                 and wp.get("path", "")
             ]
+            retry_later = False  # a download failed in a way that may work next time
             for wp in usable:
                 wp_id = wp.get("id", "")
                 try:
                     img_resp = safe_get(wp["path"], timeout=20)
                 except requests.RequestException as e:
                     log.warning(f"Wallhaven download failed for {wp_id}: {e}")
+                    retry_later = True
                     continue  # try the next result instead of giving up on this search
                 if img_resp.status_code == 200 and len(img_resp.content) > 50_000:
                     tmp_path = WALLPAPER_DIR / "_temp_wallhaven.jpg"
@@ -1233,9 +1246,15 @@ def fetch_from_wallhaven(queries: list[str], sorting: str | None = None,
                     save_seen_id(wp_id)
                     return Wallpaper(str(tmp_path), source, f"Wallhaven {wp_id} (search: {query})",
                                      wp.get("url"), key=wp_id)
+                if img_resp.status_code in (200, 404):
+                    # Gone, or not a real image: a definite no, so it never holds up this page again (INV-12)
+                    save_seen_id(wp_id)
+                    seen.add(wp_id)
+                else:
+                    retry_later = True  # 429/5xx: temporary
 
-            if usable:
-                return None  # this page still has unshown wallpapers; their downloads failed, so it isn't used up
+            if retry_later:
+                return None  # this page still has unshown wallpapers to try again, so it isn't used up
             meta = data.get("meta")
             last_page = meta.get("last_page") if isinstance(meta, dict) else None
             if not isinstance(last_page, int) or page >= last_page:
@@ -1530,8 +1549,8 @@ def download_wallpaper(fetch, attempts: int = 5) -> Wallpaper | None:
 # ─── System Tray App ─────────────────────────────────────────
 def retry_plan(outcome: str, failures: int) -> tuple[int | None, int]:
     """After a change attempt: (seconds until it is tried again, or None for the normal interval; failed tries
-    in a row). outcome is "set", "skipped" (fullscreen app in front), "failed" or "busy" (another change is
-    already running, which will make its own plan)."""
+    in a row). outcome is "set", "skipped" (fullscreen app in front), "failed", or "nothing" (every source is
+    off or empty: only the user can change that, so it waits for the normal interval)."""
     if outcome == "skipped":
         return RETRY_SECONDS, failures  # checking for a fullscreen window costs nothing, so never slow down
     if outcome == "failed":
@@ -1624,14 +1643,24 @@ class WallSwapApp:
             log.info("A wallpaper change is already in progress, ignoring this one")
             return "busy"
         try:
-            outcome = self._do_change_wallpaper()
-            self.retry_after, self.failures = retry_plan(outcome, self.failures)
-            self.elapsed = 0  # the wait for the retry, or the next interval, starts now
-            if self.retry_after:
-                log.info(f"Trying again in {self.retry_after} seconds")
-            return outcome
+            return self._change_and_plan()
         finally:
             self.change_lock.release()
+
+    def _change_and_plan(self) -> str:
+        """With change_lock held: try a change and plan when the next one is due."""
+        try:
+            outcome = self._do_change_wallpaper()
+        except Exception:
+            # HZ-2: a bug in a fetcher must not end the timer thread (and with it every later change); it is
+            # logged with its traceback and treated as a failed change
+            log.exception("The wallpaper change failed unexpectedly")
+            outcome = "failed"
+        self.retry_after, self.failures = retry_plan(outcome, self.failures)
+        self.elapsed = 0  # the wait for the retry, or the next interval, starts now
+        if self.retry_after:
+            log.info(f"Trying again in {self.retry_after} seconds")
+        return outcome
 
     def _do_change_wallpaper(self) -> str:
         if is_fullscreen_app_running():
@@ -1639,6 +1668,10 @@ class WallSwapApp:
             return "skipped"
 
         settings.reload()  # pick up hand edits to settings.json
+        if not source_weights(settings.snapshot()):
+            # Nothing to retry: only the user can fix this, so it waits for the normal interval
+            log.warning("Every source is off, empty or at 0%")
+            return "nothing"
         log.info("Fetching new wallpaper...")
         wallpaper = get_new_wallpaper()
         if not wallpaper:
@@ -1716,37 +1749,41 @@ class WallSwapApp:
             self.notify(f"Couldn't save it: {e}")
 
     def never_show_again(self, _=None):
-        """Block the current wallpaper for good, switch to a new one, then delete the blocked download."""
-        wallpaper = self.current
-        if not wallpaper or not wallpaper.key:
-            self.notify("There's no current wallpaper to block yet.")
-            return
-        try:
-            block_image(wallpaper.key)
-        except OSError as e:
-            self.notify(f"Couldn't block it: {e}")
-            return
-        # Not the current wallpaper any more, so the change below doesn't put it in the Previous history
-        self.current = None
-        self.history = collections.deque((w for w in self.history if w.key != wallpaper.key),
-                                         maxlen=HISTORY_LENGTH)
-        if self.icon:
-            self.icon.title = f"WallSwap {APP_VERSION}"
-        self.refresh_menu()
-        self.notify(f"{wallpaper.title} won't be shown again. To undo, remove its line from {BLOCKED_FILE.name}.",
-                    "Blocked")
-        self.elapsed = 0
-        threading.Thread(target=self._replace_blocked, args=(wallpaper,), daemon=True).start()
+        """Block the current wallpaper for good, switch to a new one, then delete the blocked download
+        (tray thread: the work happens on its own thread)."""
+        threading.Thread(target=self._block_current, daemon=True).start()
 
-    def _replace_blocked(self, wallpaper: Wallpaper):
-        self._change_wallpaper()
-        # Only WallSwap's own download is deleted; a file from the user's folders is blocked, never touched (INV-8)
-        path = Path(wallpaper.path)
-        if wallpaper.source != "local" and is_own_download(path):
+    def _block_current(self):
+        # Waits for a change already running, so "current" is the wallpaper really on the desktop and nothing
+        # else touches current or the history meanwhile
+        with self.change_lock:
+            wallpaper = self.current
+            if not wallpaper or not wallpaper.key:
+                self.notify("There's no current wallpaper to block yet.")
+                return
             try:
-                path.unlink(missing_ok=True)
+                block_image(wallpaper.key)
             except OSError as e:
-                log.warning(f"Couldn't delete the blocked wallpaper {path.name}: {e}")
+                self.notify(f"Couldn't block it: {e}")
+                return
+            # Not the current wallpaper any more, so the change below doesn't put it in the Previous history
+            self.current = None
+            for earlier in [w for w in self.history if w.key == wallpaper.key]:
+                self.history.remove(earlier)
+            if self.icon:
+                self.icon.title = f"WallSwap {APP_VERSION}"
+            self.refresh_menu()
+            self.notify(f"{wallpaper.title} won't be shown again. To undo, remove its line from "
+                        f"{BLOCKED_FILE.name}.", "Blocked")
+            self._change_and_plan()
+            # Only WallSwap's own download is deleted; a file from the user's folders is blocked, never
+            # touched (INV-8)
+            path = Path(wallpaper.path)
+            if wallpaper.source != "local" and is_own_download(path):
+                try:
+                    path.unlink(missing_ok=True)
+                except OSError as e:
+                    log.warning(f"Couldn't delete the blocked wallpaper {path.name}: {e}")
 
     def open_source(self, _=None):
         """Show what the current wallpaper is, and open its web page (or its file)."""
