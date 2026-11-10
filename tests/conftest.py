@@ -43,6 +43,8 @@ def _fixed_screen(request, monkeypatch):
 def _no_real_windows_state(request, monkeypatch):
     """Tests never depend on the PC's real connection and never write the real registry; test_metered_fit
     fakes both itself."""
+    # A real dialog would wait for a click forever
+    monkeypatch.setattr(wallpaper_changer, "message_box", lambda *args, **kwargs: False)
     if request.module.__name__ != "test_metered_fit":
         monkeypatch.setattr(wallpaper_changer, "is_metered", lambda: False)
         monkeypatch.setattr(wallpaper_changer, "apply_wallpaper_fit", lambda fit: None)

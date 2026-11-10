@@ -94,6 +94,12 @@ class TagList(ctk.CTkFrame):
     def values(self) -> list[str]:
         return [search for search, _chip in self._chips]
 
+    def add(self, text: str):
+        """Add text as if the user had typed it and pressed Add."""
+        self._entry.delete(0, "end")
+        self._entry.insert(0, text)
+        self._add()
+
     def _add_chip(self, search: str):
         chip = ctk.CTkButton(self._chip_frame, text=f"{search}  ×", height=24, corner_radius=12,
                              fg_color=("gray80", "gray28"), hover_color=("gray70", "gray36"),
@@ -320,20 +326,33 @@ class SettingsWindow(ctk.CTkToplevel):
         self._exclude.pack(fill="x")
 
     def _build_game(self, body):
-        self._heading(body, "Favourite game")
+        self._heading(body, "Favourite game (optional)")
+        ctk.CTkLabel(body, text="One game you want to see more of. It gets its own share of wallpaper changes: "
+                                "the Favourite game slider under Source mix. Leave both boxes empty to skip it.",
+                     text_color=HINT_COLOR, anchor="w", justify="left", wraplength=560).pack(fill="x")
+        ctk.CTkLabel(body, text="1. Name", anchor="w").pack(fill="x", pady=(6, 0))
         limit = self.deps.game_name_max
         self._game_name = ctk.CTkEntry(
-            body, placeholder_text="Game name", validate="key",
+            body, placeholder_text="For example: Hollow Knight", validate="key",
             validatecommand=(self.register(lambda text: len(text) <= limit), "%P"))
         if self._snapshot["game_name"]:
             self._game_name.insert(0, self._snapshot["game_name"][:limit])
         self._game_name.pack(fill="x")
-        ctk.CTkLabel(body, text="Leave empty if you don't want one.", text_color=HINT_COLOR,
-                     anchor="w").pack(fill="x")
-        ctk.CTkLabel(body, text="Wallhaven searches for it", anchor="w").pack(fill="x", pady=(6, 0))
+        ctk.CTkLabel(body, text="2. What to search Wallhaven for", anchor="w").pack(fill="x", pady=(6, 0))
+        ctk.CTkLabel(body, text="Usually just the game's name; it is added for you when you leave the name box. "
+                                "Add more for sequels or other spellings. Click a search to remove it.",
+                     text_color=HINT_COLOR, anchor="w", justify="left", wraplength=560).pack(fill="x")
         self._game_tags = TagList(body, self._snapshot["game_queries"], self.deps.clean_search,
                                   on_change=self._refresh_shares, count_search=self.deps.count_search, is_game=True)
         self._game_tags.pack(fill="x")
+        self._game_name.bind("<FocusOut>", lambda _e: self._name_to_search())
+        self._game_name.bind("<Return>", lambda _e: self._name_to_search())
+
+    def _name_to_search(self):
+        """A typed game name with no searches yet becomes the first search, so the game has something to use."""
+        name = self._game_name.get().strip()
+        if name and not self._game_tags.values():
+            self._game_tags.add(name)
 
     def _build_folders(self, body):
         self._heading(body, "My folders")

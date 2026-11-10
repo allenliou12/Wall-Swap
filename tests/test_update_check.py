@@ -81,6 +81,14 @@ def app(monkeypatch):
     opened = []
     monkeypatch.setattr(wc.webbrowser, "open", opened.append)
     app.opened = opened
+    app.dialogs = []      # (text, yes_no) of every dialog shown
+    app.click_yes = False  # what the user clicks in a Yes/No dialog
+
+    def fake_box(text, title="WallSwap", yes_no=False):
+        app.dialogs.append((text, yes_no))
+        return app.click_yes if yes_no else True
+
+    monkeypatch.setattr(wc, "message_box", fake_box)
     yield app
     wc.UPDATE_NOTIFIED_FILE.unlink(missing_ok=True)
 
@@ -106,20 +114,64 @@ def test_an_automatic_check_tells_once_per_version(app, monkeypatch):
     assert app.update_version == "99.1.0" and len(app.notes) == 2
 
 
-def test_a_manual_check_always_answers(app, monkeypatch):
+def test_a_manual_check_always_answers_in_a_dialog_not_a_notification(app, monkeypatch):
+    """Notifications can be switched off in Windows; an answer the user asked for must still be seen."""
     _latest(monkeypatch, "99.0.0")
     app._check_for_updates(manual=True)
     app._check_for_updates(manual=True)
-    assert len(app.notes) == 2
+    assert len(app.dialogs) == 2 and all(yes_no for _text, yes_no in app.dialogs)
+    assert "99.0.0 is available" in app.dialogs[0][0]
+    assert app.opened == []  # clicked No: nothing opens
+
+    app.click_yes = True
+    app._check_for_updates(manual=True)
+    assert app.opened == [wc.RELEASES_URL]
 
     _latest(monkeypatch, wc.APP_VERSION)
     app._check_for_updates(manual=True)
-    assert app.notes[-1] == f"You're up to date (WallSwap {wc.APP_VERSION})."
+    assert app.dialogs[-1] == (f"You're up to date.\n\nWallSwap {wc.APP_VERSION} is the newest version.", False)
     assert app.update_version is None
 
     _latest(monkeypatch, OSError("offline"))
     app._check_for_updates(manual=True)
-    assert app.notes[-1] == "Couldn't check for updates right now."
+    assert app.dialogs[-1][0].startswith("Couldn't check for updates right now.")
+    assert app.notes == []  # no notifications at all for manual checks
+
+
+def test_an_automatic_check_never_opens_a_dialog(app, monkeypatch):
+    for version in ("99.0.0", wc.APP_VERSION, OSError("offline")):
+        _latest(monkeypatch, version)
+        app._check_for_updates(manual=False)
+    assert app.dialogs == []
+
+
+def test_a_manual_check_after_the_automatic_notice_still_answers_and_does_not_renotify(app, monkeypatch):
+    _latest(monkeypatch, "99.0.0")
+    app._check_for_updates(manual=False)
+    app._check_for_updates(manual=True)
+    app._check_for_updates(manual=False)
+    assert len(app.notes) == 1 and len(app.dialogs) == 1
+
+
+def test_a_second_click_while_a_check_is_open_does_nothing(app, monkeypatch):
+    _latest(monkeypatch, wc.APP_VERSION)
+    app.manual_update_check.acquire()  # a check is running or its dialog is open
+    try:
+        app._manual_update_check()
+    finally:
+        app.manual_update_check.release()
+    assert app.dialogs == []
+    app._manual_update_check()
+    assert len(app.dialogs) == 1 and not app.manual_update_check.locked()
+
+
+def test_if_the_dialog_cannot_be_shown_a_notification_is_tried(app, monkeypatch):
+    def broken(*args, **kwargs):
+        raise OSError("no desktop")
+    monkeypatch.setattr(wc, "message_box", broken)
+    _latest(monkeypatch, wc.APP_VERSION)
+    app._check_for_updates(manual=True)
+    assert app.notes == [f"You're up to date.  WallSwap {wc.APP_VERSION} is the newest version."]
 
 
 def test_an_automatic_check_is_silent_when_up_to_date_or_offline_and_retries_sooner(app, monkeypatch):

@@ -860,6 +860,21 @@ def apply_wallpaper_fit(fit: str) -> None:
         winreg.SetValueEx(key, "TileWallpaper", 0, winreg.REG_SZ, "0")
 
 
+MB_OK, MB_YESNO, MB_ICONINFORMATION = 0x0, 0x4, 0x40
+MB_SETFOREGROUND, MB_TOPMOST = 0x10000, 0x40000  # in front of other windows, where a tray click expects it
+IDOK, IDYES = 1, 6
+
+
+def message_box(text: str, title: str = "WallSwap", yes_no: bool = False) -> bool:
+    """Show a small Windows dialog and wait for the user. True for OK or Yes.
+
+    For answers the user asked for (Check for Updates): a tray notification is not shown at all when Windows
+    notifications or Do not disturb are off, which looks like nothing happened.
+    """
+    flags = (MB_YESNO if yes_no else MB_OK) | MB_ICONINFORMATION | MB_SETFOREGROUND | MB_TOPMOST
+    return ctypes.windll.user32.MessageBoxW(None, text, title, flags) in (IDOK, IDYES)
+
+
 def set_wallpaper(image_path: str):
     """Set the desktop wallpaper using Windows API."""
     SPI_SETDESKWALLPAPER = 0x0014
@@ -1689,6 +1704,8 @@ class WallSwapApp:
         self.elapsed = 0
         self.update_version: str | None = None  # a newer release found by the update check
         self.next_update_check = 0.0            # time.monotonic() of the next automatic check; 0 = at startup
+        # Held while a check asked for from the tray runs and its dialog is open, so clicks can't stack dialogs
+        self.manual_update_check = threading.Lock()
         self.retry_after: int | None = None  # seconds until a skipped or failed change is tried again
         self.failures = 0                    # failed changes in a row
         self.change_lock = threading.Lock()  # one wallpaper change at a time
@@ -2107,8 +2124,26 @@ class WallSwapApp:
 
     # ── Updates ──
     def check_for_updates(self, _=None):
-        """Tray: ask GitHub now and always say what it answered."""
-        threading.Thread(target=self._check_for_updates, args=(True,), daemon=True).start()
+        """Tray: ask GitHub now and always say what it answered, in a dialog."""
+        threading.Thread(target=self._manual_update_check, daemon=True).start()
+
+    def _manual_update_check(self):
+        if not self.manual_update_check.acquire(blocking=False):
+            return  # one is already running, or its dialog is still open
+        try:
+            self._check_for_updates(True)
+        finally:
+            self.manual_update_check.release()
+
+    def answer(self, message: str, yes_no: bool = False) -> bool:
+        """Worker thread: tell the user something they asked for, in a dialog they can't miss. True for OK/Yes."""
+        log.info(f"WallSwap: {message}".replace("\n", " "))
+        try:
+            return message_box(message, f"WallSwap {APP_VERSION}", yes_no)
+        except Exception as e:
+            log.warning(f"Couldn't show a dialog, using a notification: {e}")
+            self.notify(message.replace("\n", " "))
+            return False
 
     def auto_check_for_updates(self):
         """Timer thread: start the daily check when it is due and the user hasn't turned it off."""
@@ -2121,13 +2156,14 @@ class WallSwapApp:
         threading.Thread(target=self._check_for_updates, args=(False,), daemon=True).start()
 
     def _check_for_updates(self, manual: bool):
-        """Worker thread. An automatic check speaks up only once per new version; a manual one always answers."""
+        """Worker thread. An automatic check notifies only once per new version; a manual one always answers,
+        in a dialog."""
         try:
             latest = latest_release()
         except Exception as e:  # offline, timeout, HTTP error or an odd reply
             log.warning(f"Couldn't check for updates: {e}")
             if manual:
-                self.notify("Couldn't check for updates right now.")
+                self.answer("Couldn't check for updates right now.\n\nCheck your internet connection and try again.")
             else:
                 self.next_update_check = time.monotonic() + UPDATE_RETRY_SECONDS
             return
@@ -2136,17 +2172,23 @@ class WallSwapApp:
             self.update_version = None
             self.refresh_menu()
             if manual:
-                self.notify(f"You're up to date (WallSwap {APP_VERSION}).")
+                self.answer(f"You're up to date.\n\nWallSwap {APP_VERSION} is the newest version.")
             return
         self.update_version = latest
         self.refresh_menu()
-        if manual or not update_already_notified(latest):
-            self.notify(f"WallSwap {latest} is available (you have {APP_VERSION}). "
-                        "Click Update available in the tray menu to get it.", "Update available")
+        first_time = not update_already_notified(latest)
+        if first_time:
             try:
                 UPDATE_NOTIFIED_FILE.write_text(latest, encoding="utf-8")
             except OSError as e:
                 log.warning(f"Couldn't remember the update notice, it may show again: {e}")
+        if manual:
+            if self.answer(f"WallSwap {latest} is available (you have {APP_VERSION}).\n\n"
+                           "Open the download page?", yes_no=True):
+                self.open_releases()
+        elif first_time:
+            self.notify(f"WallSwap {latest} is available (you have {APP_VERSION}). "
+                        "Click Update available in the tray menu to get it.", "Update available")
 
     def open_releases(self, _=None):
         """Open WallSwap's Releases page; the user downloads and installs the update themselves."""
