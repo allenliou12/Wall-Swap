@@ -38,6 +38,7 @@ class WindowDeps:
     game_name_max: int
     version: str = ""                                 # shown in the title bar
     resolution_labels: dict[str, str] = dataclasses.field(default_factory=dict)  # min_resolution value -> label
+    fit_labels: dict[str, str] = dataclasses.field(default_factory=dict)         # wallpaper_fit value -> label
     clean_exclude: Callable[[str, list[str]], str | None] | None = None   # an excluded word as stored, or None
     exclude_problem: Callable[[str, list[str]], str | None] | None = None  # why a word can't be added
     # (search, done): counts Wallhaven's wallpapers off the Tk thread, then calls done(count or None) on it
@@ -286,6 +287,7 @@ class SettingsWindow(ctk.CTkToplevel):
         self._build_mix(body)
         self._build_interval(body)
         self._build_resolution(body)
+        self._build_fit(body)
         self._build_updates(body)
         self._build_startup(body)
         self._build_footer()
@@ -381,12 +383,28 @@ class SettingsWindow(ctk.CTkToplevel):
         ctk.CTkLabel(body, text="Smaller images are skipped, in your own folders too. Match my screen never asks "
                                 "for more than 1440p.", text_color=HINT_COLOR, anchor="w").pack(fill="x")
 
+    def _build_fit(self, body):
+        self._heading(body, "How the picture fits the screen")
+        self._fit_by_label = {label: value for value, label in self.deps.fit_labels.items()}
+        self._fit = ctk.CTkSegmentedButton(body, values=list(self._fit_by_label))
+        # A hand-set value that isn't one of the choices behaves as the first one (leave Windows alone) and is kept
+        self._fit.set(self.deps.fit_labels.get(self._snapshot["wallpaper_fit"]) or next(iter(self._fit_by_label), ""))
+        self._fit.pack(anchor="w")
+        ctk.CTkLabel(body, text="Fill crops the edges, Fit shows the whole picture, Span stretches one picture "
+                                "across all screens.", text_color=HINT_COLOR, anchor="w").pack(fill="x")
+
     def _build_updates(self, body):
-        self._heading(body, "Updates")
+        self._heading(body, "Internet")
         self._updates = ctk.CTkSwitch(body, text="Tell me when a new version is out (checks GitHub once a day)")
         if self._snapshot["check_for_updates"]:
             self._updates.select()
         self._updates.pack(anchor="w")
+        self._metered = ctk.CTkSwitch(body, text="Download on metered connections (phone hotspot, capped plan)")
+        if self._snapshot["metered_downloads"]:
+            self._metered.select()
+        self._metered.pack(anchor="w", pady=(6, 0))
+        ctk.CTkLabel(body, text="Off: on a metered connection only your own folders are used.",
+                     text_color=HINT_COLOR, anchor="w").pack(fill="x")
 
     def _build_startup(self, body):
         self._heading(body, "Start with Windows")
@@ -429,7 +447,12 @@ class SettingsWindow(ctk.CTkToplevel):
         if snap["min_resolution"] not in self.deps.resolution_labels and resolution == next(
                 iter(self.deps.resolution_labels), None):
             resolution = snap["min_resolution"]  # the hand-set value was only shown as the first choice
+        fit = self._fit_by_label.get(self._fit.get(), snap["wallpaper_fit"])
+        if snap["wallpaper_fit"] not in self.deps.fit_labels and fit == next(iter(self.deps.fit_labels), None):
+            fit = snap["wallpaper_fit"]  # the hand-set value was only shown as the first choice
         return {
+            "wallpaper_fit": fit,
+            "metered_downloads": self._metered.get() == 1,
             "interval_minutes": self._interval_by_label.get(self._interval.get(), snap["interval_minutes"]),
             "min_resolution": resolution,
             "exclude_words": self._exclude.values(),

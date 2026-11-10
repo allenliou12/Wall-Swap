@@ -38,5 +38,14 @@ def _fixed_screen(request, monkeypatch):
     if request.module.__name__ != "test_screen_size":
         monkeypatch.setattr(wallpaper_changer, "largest_screen", lambda: (2560, 1440))
 
+
+@pytest.fixture(autouse=True)
+def _no_real_windows_state(request, monkeypatch):
+    """Tests never depend on the PC's real connection and never write the real registry; test_metered_fit
+    fakes both itself."""
+    if request.module.__name__ != "test_metered_fit":
+        monkeypatch.setattr(wallpaper_changer, "is_metered", lambda: False)
+        monkeypatch.setattr(wallpaper_changer, "apply_wallpaper_fit", lambda fit: None)
+
 assert str(wallpaper_changer.WALLPAPER_DIR).startswith(_home), "tests must never touch the real home folder"
 assert str(wallpaper_changer.startup_shortcut_path()).startswith(_appdata), "tests must never touch the real Startup folder"

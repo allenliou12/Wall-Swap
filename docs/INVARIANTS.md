@@ -68,6 +68,11 @@ IDs are stable: never renumber, retire with a note.
   automatic) and a tray line. It never downloads or installs anything, and the page it opens is the fixed `RELEASES_URL`,
   never a link from the reply. `check_for_updates: false` stops the automatic check. Code: `latest_release`,
   `newer_version`, `_check_for_updates`. Tests: `tests/test_update_check.py`.
+- **INV-19 · Nothing is downloaded on a metered connection** unless `metered_downloads` is on. `downloads_allowed`
+  asks Windows (`connection_cost`, the Network List Manager's cost flags: fixed, variable, over the limit or
+  roaming count as metered). When not allowed, a change uses only local and game folders (`offline_weights`,
+  `fetch_source(online=False)`), does nothing if there are none, and the automatic update check waits. If
+  Windows can't say, the connection counts as not metered. Tests: `tests/test_metered_fit.py`.
 - **INV-12 · A temporary failure never marks an image as seen.** Met 429/5xx and network errors skip the painting
   for now; only a definite yes/no is recorded. Code: `_museum_get`, `fetch_from_museum`.
 - **INV-13 · One wallpaper change at a time.** A change requested while one is running is dropped. Code:
@@ -86,6 +91,10 @@ IDs are stable: never renumber, retire with a note.
   use (no ticked topic with searches, no folders, no game searches or game folders) or with weight 0 gets no share;
   the percentages the settings window shows are the real shares. An empty search list never falls back to other
   searches. Code: `source_available`, `source_weights`, `get_new_wallpaper`.
+- **INV-20 · The wallpaper fit is changed only when the user picked one.** With `wallpaper_fit` at `auto` (the
+  default) or an unknown value, Windows' own placement is never touched; `fill`, `fit` and `span` write
+  `WallpaperStyle` and `TileWallpaper` under `HKCU\Control Panel\Desktop`, the only registry values WallSwap
+  sets. Code: `apply_wallpaper_fit`. Tests: `tests/test_metered_fit.py`.
 - **INV-16 · Outside its own folder, WallSwap writes only `Startup\WallSwap.lnk`,** and only when the user flips
   Start with Windows or, in the packaged exe, to re-point one that already exists at this exe (never creating it);
   that exact file is the only one it deletes there. The shortcut is written by an absolute-path PowerShell (Windows

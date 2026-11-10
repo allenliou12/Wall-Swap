@@ -29,12 +29,18 @@ import subprocess
 import sys
 import threading
 import time
+import uuid
 import warnings
 import webbrowser
 from datetime import datetime
 from pathlib import Path, PureWindowsPath
 from tkinter import TclError, filedialog  # plain tkinter opens no window on import, so tests stay headless
 from urllib.parse import urljoin, urlsplit
+
+try:
+    import winreg  # Windows only; the wallpaper fit lives in the registry
+except ImportError:
+    winreg = None
 
 try:
     import pystray
@@ -75,6 +81,10 @@ MIN_HEIGHT = 1440
 # The min_resolution setting: the smallest image used. "auto" follows the screen; the rest are fixed sizes.
 RESOLUTION_SIZES = {"1080p": (1920, 1080), "1440p": (2560, 1440), "4k": (3840, 2160)}
 RESOLUTION_LABELS = {"auto": "Match my screen", "1080p": "1080p", "1440p": "1440p", "4k": "4K"}  # display order
+# The wallpaper_fit setting: how Windows places the picture. "auto" never touches it, so the look the user
+# chose in Windows stays; the others are Windows' own WallpaperStyle values (with TileWallpaper 0).
+FIT_STYLES = {"fill": "10", "fit": "6", "span": "22"}
+FIT_LABELS = {"auto": "As Windows has it", "fill": "Fill", "fit": "Fit", "span": "Span"}  # display order
 MAX_WALLPAPERS = 50         # keep only the most recent on disk
 MAX_SEEN_IDS = 5000         # dedup history cap (oldest dropped first)
 USER_AGENT = f"WallSwap/{APP_VERSION} (Windows Desktop Wallpaper Changer)"
@@ -116,9 +126,13 @@ MAX_WINDOWS_PATH = 260  # MAX_PATH: the Windows folder always fits; a longer ans
 #            (so other folders can't dilute it)
 #   local_folders: your own image folders (top-level images only, not subfolders)
 #   min_resolution: a key of RESOLUTION_LABELS; anything else counts as "auto"
+#   wallpaper_fit: a key of FIT_LABELS; anything else counts as "auto"
+#   metered_downloads: False = on a metered connection nothing is downloaded, only your own folders are used
 DEFAULT_SETTINGS = {
     "interval_minutes": 30,
     "min_resolution": "auto",
+    "wallpaper_fit": "auto",
+    "metered_downloads": False,
     "sources": {"wallhaven": True, "game": True, "museum": True, "local": True},
     "chances": {"wallhaven": 0.45, "museum": 0.15, "local": 0.2, "game": 0.2},
     "topics": {
@@ -383,7 +397,8 @@ def settings_patch(before: dict, after: dict) -> dict:
 
     Folders are listed as adds and removes, not whole lists, for the same reason.
     """
-    paths = [("interval_minutes",), ("min_resolution",), ("exclude_words",), ("check_for_updates",), ("game_name",),
+    paths = [("interval_minutes",), ("min_resolution",), ("wallpaper_fit",), ("metered_downloads",),
+             ("exclude_words",), ("check_for_updates",), ("game_name",),
              ("game_queries",)]
     paths += [("chances", s) for s in before["chances"]]
     paths += [("topics", t, f) for t in before["topics"] for f in ("enabled", "searches")]
@@ -758,6 +773,91 @@ def min_size() -> tuple[int, int]:
     if screen is None:
         return MIN_WIDTH, MIN_HEIGHT
     return min(screen[0], MIN_WIDTH), min(screen[1], MIN_HEIGHT)
+
+
+class GUID(ctypes.Structure):
+    _fields_ = [("data1", ctypes.wintypes.DWORD), ("data2", ctypes.wintypes.WORD),
+                ("data3", ctypes.wintypes.WORD), ("data4", ctypes.c_ubyte * 8)]
+
+    @classmethod
+    def of(cls, text: str) -> "GUID":
+        return cls.from_buffer_copy(uuid.UUID(text).bytes_le)
+
+
+# Windows' Network List Manager, asked through its INetworkCostManager interface
+CLSID_NETWORK_LIST_MANAGER = "DCB00C01-570F-4A9B-8D69-199FDBA5723B"
+IID_NETWORK_COST_MANAGER = "DCB00008-570F-4A9B-8D69-199FDBA5723B"
+CLSCTX_ALL = 0x17
+COINIT_MULTITHREADED = 0x0
+RPC_E_CHANGED_MODE = 0x80010106  # the thread already uses COM in the other mode: usable, but not ours to close
+# NLM_CONNECTION_COST bits. Unrestricted is 0x1; these mean the connection costs money or is capped.
+COST_FIXED, COST_VARIABLE = 0x2, 0x4
+COST_OVER_LIMIT, COST_ROAMING = 0x10000, 0x40000
+METERED_COSTS = COST_FIXED | COST_VARIABLE | COST_OVER_LIMIT | COST_ROAMING
+
+
+def connection_cost() -> int:
+    """Windows' cost flags for the internet connection in use (NLM_CONNECTION_COST). Raises OSError if Windows
+    won't say."""
+    ole32 = ctypes.windll.ole32
+    ole32.CoInitializeEx.argtypes = [ctypes.c_void_p, ctypes.wintypes.DWORD]
+    ole32.CoInitializeEx.restype = ctypes.c_long
+    ole32.CoCreateInstance.argtypes = [ctypes.POINTER(GUID), ctypes.c_void_p, ctypes.wintypes.DWORD,
+                                       ctypes.POINTER(GUID), ctypes.POINTER(ctypes.c_void_p)]
+    ole32.CoCreateInstance.restype = ctypes.c_long
+    started = ole32.CoInitializeEx(None, COINIT_MULTITHREADED)
+    if started < 0 and started & 0xFFFFFFFF != RPC_E_CHANGED_MODE:
+        raise OSError(f"COM would not start (0x{started & 0xFFFFFFFF:08X})")
+    try:
+        manager = ctypes.c_void_p()
+        result = ole32.CoCreateInstance(ctypes.byref(GUID.of(CLSID_NETWORK_LIST_MANAGER)), None, CLSCTX_ALL,
+                                        ctypes.byref(GUID.of(IID_NETWORK_COST_MANAGER)), ctypes.byref(manager))
+        if result < 0 or not manager:
+            raise OSError(f"No network cost manager (0x{result & 0xFFFFFFFF:08X})")
+        # A COM object starts with a pointer to its table of methods: 0-2 are IUnknown's, 3 is GetCost
+        methods = ctypes.cast(ctypes.cast(manager, ctypes.POINTER(ctypes.c_void_p))[0],
+                              ctypes.POINTER(ctypes.c_void_p))
+        release = ctypes.WINFUNCTYPE(ctypes.wintypes.ULONG, ctypes.c_void_p)(methods[2])
+        get_cost = ctypes.WINFUNCTYPE(ctypes.c_long, ctypes.c_void_p, ctypes.POINTER(ctypes.wintypes.DWORD),
+                                      ctypes.c_void_p)(methods[3])
+        try:
+            cost = ctypes.wintypes.DWORD()
+            result = get_cost(manager, ctypes.byref(cost), None)
+            if result < 0:
+                raise OSError(f"GetCost failed (0x{result & 0xFFFFFFFF:08X})")
+            return cost.value
+        finally:
+            release(manager)
+    finally:
+        if started >= 0:
+            ole32.CoUninitialize()
+
+
+def is_metered() -> bool:
+    """Is the internet connection metered (a phone hotspot, a capped or roaming plan)? False if Windows won't
+    say, so a PC where the check doesn't work behaves as it always did."""
+    try:
+        return bool(connection_cost() & METERED_COSTS)
+    except Exception as e:
+        # HZ-2: absorbed so wallpapers keep changing, but logged
+        log.warning(f"Couldn't tell whether the connection is metered, treating it as not: {e}")
+        return False
+
+
+def downloads_allowed(data: dict) -> bool:
+    """May WallSwap use the internet right now? Not on a metered connection, unless the user allowed it."""
+    return data["metered_downloads"] or not is_metered()
+
+
+def apply_wallpaper_fit(fit: str) -> None:
+    """Tell Windows how to place the next wallpaper (fill, fit or span). "auto" and unknown values change
+    nothing, so the user's own choice in Windows stays. Raises OSError if the registry can't be written."""
+    style = FIT_STYLES.get(fit)
+    if style is None or winreg is None:
+        return
+    with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Control Panel\Desktop", 0, winreg.KEY_SET_VALUE) as key:
+        winreg.SetValueEx(key, "WallpaperStyle", 0, winreg.REG_SZ, style)
+        winreg.SetValueEx(key, "TileWallpaper", 0, winreg.REG_SZ, "0")
 
 
 def set_wallpaper(image_path: str):
@@ -1475,10 +1575,20 @@ def source_shares(weights: dict[str, float]) -> dict[str, int]:
     return shares
 
 
-def fetch_source(source: str, data: dict) -> Wallpaper | None:
-    """Get one wallpaper from the named source, using the settings in data."""
+def offline_weights(data: dict) -> dict[str, float]:
+    """source_weights without the internet: only sources that have folders, which are all they will use."""
+    weights = source_weights(data)
+    return {s: w for s, w in weights.items()
+            if (s == "local" and data["local_folders"]) or (s == "game" and data["game_folders"])}
+
+
+def fetch_source(source: str, data: dict, online: bool = True) -> Wallpaper | None:
+    """Get one wallpaper from the named source, using the settings in data. With online False nothing is
+    downloaded: only the folders of "local" and "game" are used."""
     if source == "local":
         return pick_local_wallpaper([Path(f) for f in data["local_folders"]])
+    if not online:
+        return pick_local_wallpaper([Path(f) for f in data["game_folders"]]) if source == "game" else None
     if source == "game":
         # Few game wallpapers exist on Wallhaven: "random" sorting reaches all of them
         # (toplist only returns a handful). Once they've all been shown, use the game folders.
@@ -1493,12 +1603,13 @@ def fetch_source(source: str, data: dict) -> Wallpaper | None:
         lambda: fetch_from_wallhaven(wallhaven_query_pool(data), exclude=data["exclude_words"]))
 
 
-def get_new_wallpaper() -> Wallpaper | None:
-    """Pick a source at random by weight, falling back to the others if it fails."""
+def get_new_wallpaper(online: bool = True) -> Wallpaper | None:
+    """Pick a source at random by weight, falling back to the others if it fails. With online False (a
+    metered connection) only the user's folders are used and nothing is downloaded."""
     data = settings.snapshot()
-    weights = source_weights(data)
+    weights = source_weights(data) if online else offline_weights(data)
     if not weights:
-        log.warning("Every source is off, empty or at 0%")
+        log.warning("Every source is off, empty or at 0%" if online else "No folders to use without downloading")
         return None
     choice = random.choices(list(weights), weights=list(weights.values()), k=1)[0]
 
@@ -1506,7 +1617,7 @@ def get_new_wallpaper() -> Wallpaper | None:
     # that has a share, so one that is off, empty or at 0% is never used
     order = [choice] + [s for s in ("wallhaven", "local") if s in weights]
     for source in dict.fromkeys(order):
-        wallpaper = fetch_source(source, data)
+        wallpaper = fetch_source(source, data) if online else fetch_source(source, data, online=False)
         if wallpaper:
             return wallpaper
     return None
@@ -1668,12 +1779,18 @@ class WallSwapApp:
             return "skipped"
 
         settings.reload()  # pick up hand edits to settings.json
-        if not source_weights(settings.snapshot()):
+        data = settings.snapshot()
+        if not source_weights(data):
             # Nothing to retry: only the user can fix this, so it waits for the normal interval
             log.warning("Every source is off, empty or at 0%")
             return "nothing"
-        log.info("Fetching new wallpaper...")
-        wallpaper = get_new_wallpaper()
+        online = downloads_allowed(data)
+        if not online and not offline_weights(data):
+            log.info("Metered connection and no folders to use: leaving the wallpaper until the next interval")
+            return "nothing"
+        log.info("Fetching new wallpaper..." if online else
+                 "Metered connection: picking from your folders, nothing is downloaded")
+        wallpaper = get_new_wallpaper() if online else get_new_wallpaper(online=False)
         if not wallpaper:
             log.warning("Could not fetch a new wallpaper this round")
             return "failed"
@@ -1690,6 +1807,10 @@ class WallSwapApp:
 
     def _show(self, wallpaper: Wallpaper):
         """Put a wallpaper on the desktop and lock screen and make it the current one. Raises if Windows refuses."""
+        try:
+            apply_wallpaper_fit(settings.data["wallpaper_fit"])
+        except OSError as e:
+            log.warning(f"Couldn't set the wallpaper fit, Windows keeps its own: {e}")  # the picture still changes
         set_wallpaper(wallpaper.path)
         set_lock_screen(wallpaper.path)
         self.current = wallpaper
@@ -1924,6 +2045,7 @@ class WallSwapApp:
             source_order=SOURCE_ORDER,
             interval_choices=INTERVAL_CHOICES,
             resolution_labels=RESOLUTION_LABELS,
+            fit_labels=FIT_LABELS,
             shares=lambda d: source_shares(source_weights(d)),
             drop_reason=drop_reason,
             clean_search=clean_search,
@@ -1991,6 +2113,9 @@ class WallSwapApp:
     def auto_check_for_updates(self):
         """Timer thread: start the daily check when it is due and the user hasn't turned it off."""
         if not settings.data["check_for_updates"] or time.monotonic() < self.next_update_check:
+            return
+        if not downloads_allowed(settings.snapshot()):
+            self.next_update_check = time.monotonic() + UPDATE_RETRY_SECONDS  # metered: look again in an hour
             return
         self.next_update_check = time.monotonic() + UPDATE_CHECK_SECONDS
         threading.Thread(target=self._check_for_updates, args=(False,), daemon=True).start()

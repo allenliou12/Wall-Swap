@@ -60,6 +60,8 @@ Right-click the tray icon and pick Settings… to open it again.
 - **Source mix:** one slider each for Wallhaven, Met paintings, your folders and your favourite game. The percentage next to each is its real share of changes. A source with nothing to use (no folders, no game searches, no ticked topics) or turned off drops out and says why.
 - **Change every:** 15 min, 30 min, 1 hour or 2 hours.
 - **Smallest image to use:** Match my screen, 1080p, 1440p or 4K. Smaller images are skipped, in your own folders too.
+- **How the picture fits the screen:** As Windows has it (the default: WallSwap doesn't touch it), Fill, Fit or Span. Span stretches one picture across all your screens.
+- **Download on metered connections:** off by default. On a phone hotspot or a capped or roaming plan (anything Windows marks as metered) WallSwap downloads nothing and uses only your own folders; with no folders the wallpaper just stays until you're back on a normal connection. The update check waits too.
 - **Updates:** once a day (and at start) WallSwap asks GitHub whether a newer version is out and tells you once per version. It only reads the public release page, sends nothing about you, and never downloads or installs anything. Turn the switch off to stop it; Check for Updates in the tray menu still works.
 - **Start with Windows:** puts a WallSwap shortcut in your Startup folder (or takes it out).
 
@@ -92,6 +94,8 @@ The window saves to `Pictures\WallSwap\settings.json`. You can still edit it by 
 {
   "interval_minutes": 30,
   "min_resolution": "auto",
+  "wallpaper_fit": "auto",
+  "metered_downloads": false,
   "sources": {"wallhaven": true, "game": true, "museum": true, "local": true},
   "chances": {"wallhaven": 0.45, "museum": 0.15, "local": 0.2, "game": 0.2},
   "topics": {
@@ -109,6 +113,7 @@ The window saves to `Pictures\WallSwap\settings.json`. You can still edit it by 
 
 - `chances` are weights, not percentages; they're compared with each other.
 - The nine topic names are fixed; their searches are yours to change.
+- `wallpaper_fit` is `"auto"` (leave Windows' own setting alone), `"fill"`, `"fit"` or `"span"`.
 - `min_resolution` is `"auto"` (match the screen), `"1080p"`, `"1440p"` or `"4k"`.
 
 If you're upgrading from the version before the settings window, your old file is copied to `settings.json.bak` the first time the new version saves, and your old searches, game and folders carry over.
