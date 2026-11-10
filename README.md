@@ -60,6 +60,7 @@ Right-click the tray icon and pick Settings… to open it again.
 - **Source mix:** one slider each for Wallhaven, Met paintings, your folders and your favourite game. The percentage next to each is its real share of changes. A source with nothing to use (no folders, no game searches, no ticked topics) or turned off drops out and says why.
 - **Change every:** 15 min, 30 min, 1 hour or 2 hours.
 - **Smallest image to use:** Match my screen, 1080p, 1440p or 4K. Smaller images are skipped, in your own folders too.
+- **Updates:** once a day (and at start) WallSwap asks GitHub whether a newer version is out and tells you once per version. It only reads the public release page, sends nothing about you, and never downloads or installs anything. Turn the switch off to stop it; Check for Updates in the tray menu still works.
 - **Start with Windows:** puts a WallSwap shortcut in your Startup folder (or takes it out).
 
 Save applies from the next wallpaper change. Cancel throws away what you changed.
@@ -68,7 +69,7 @@ Save applies from the next wallpaper change. Cancel throws away what you changed
 
 Double-click the icon to skip to the next wallpaper. Right-click for:
 
-- the WallSwap version, at the top (also in the settings window and in Settings → Apps)
+- the WallSwap version, at the top (also in the settings window and in Settings → Apps), and under it an Update available line when a newer version is out; clicking it opens the Releases page
 - Next Wallpaper
 - Previous Wallpaper: goes back one, through the last 20 shown since WallSwap started
 - Favourite: copies the current one to `Pictures\WallSwap\Favourites`
@@ -77,6 +78,7 @@ Double-click the icon to skip to the next wallpaper. Right-click for:
 - Pause
 - Interval, Sources, My Folders: quick versions of the same settings
 - Settings…: opens the settings window
+- Check for Updates: asks GitHub now and tells you the answer
 - WallSwap Folder
 - Quit
 
@@ -97,6 +99,7 @@ The window saves to `Pictures\WallSwap\settings.json`. You can still edit it by 
     "...": "eight more topics: space, dark_fantasy, cities, abstract, moon_night, anime, games, movies"
   },
   "exclude_words": ["car"],
+  "check_for_updates": true,
   "game_name": "Path of Exile",
   "game_queries": ["path of exile", "path of exile 2"],
   "local_folders": ["C:\\Users\\<you>\\Pictures\\Path of Exile 2"],

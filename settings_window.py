@@ -286,6 +286,7 @@ class SettingsWindow(ctk.CTkToplevel):
         self._build_mix(body)
         self._build_interval(body)
         self._build_resolution(body)
+        self._build_updates(body)
         self._build_startup(body)
         self._build_footer()
         self._refresh_shares()
@@ -380,6 +381,13 @@ class SettingsWindow(ctk.CTkToplevel):
         ctk.CTkLabel(body, text="Smaller images are skipped, in your own folders too. Match my screen never asks "
                                 "for more than 1440p.", text_color=HINT_COLOR, anchor="w").pack(fill="x")
 
+    def _build_updates(self, body):
+        self._heading(body, "Updates")
+        self._updates = ctk.CTkSwitch(body, text="Tell me when a new version is out (checks GitHub once a day)")
+        if self._snapshot["check_for_updates"]:
+            self._updates.select()
+        self._updates.pack(anchor="w")
+
     def _build_startup(self, body):
         self._heading(body, "Start with Windows")
         self._startup = ctk.CTkSwitch(body, text="Start WallSwap when I sign in")
@@ -425,6 +433,7 @@ class SettingsWindow(ctk.CTkToplevel):
             "interval_minutes": self._interval_by_label.get(self._interval.get(), snap["interval_minutes"]),
             "min_resolution": resolution,
             "exclude_words": self._exclude.values(),
+            "check_for_updates": self._updates.get() == 1,
             "game_name": self._game_name.get().strip()[:self.deps.game_name_max],
             "game_queries": self._game_tags.values(),
             "chances": chances,

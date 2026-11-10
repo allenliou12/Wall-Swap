@@ -63,6 +63,11 @@ IDs are stable: never renumber, retire with a note.
   `met_<id>` or a local file's path) to `blocked.txt`, which is never trimmed; every source skips blocked keys. It
   deletes only WallSwap's own download of that image (`is_own_download`, the INV-9 pattern), never a file in the
   user's folders (INV-8). Code: `load_blocked`, `block_image`, `never_show_again`. Tests: `tests/test_blocked.py`.
+- **INV-18 · The update check only reads and tells.** It fetches `UPDATE_API_URL` (GitHub's latest-release data for
+  this repo) through `safe_get`, compares version numbers and shows a notification (once per version when
+  automatic) and a tray line. It never downloads or installs anything, and the page it opens is the fixed `RELEASES_URL`,
+  never a link from the reply. `check_for_updates: false` stops the automatic check. Code: `latest_release`,
+  `newer_version`, `_check_for_updates`. Tests: `tests/test_update_check.py`.
 - **INV-12 · A temporary failure never marks an image as seen.** Met 429/5xx and network errors skip the painting
   for now; only a definite yes/no is recorded. Code: `_museum_get` `:961`, `fetch_from_museum` `:933-954`.
 - **INV-13 · One wallpaper change at a time.** A change requested while one is running is dropped. Code:

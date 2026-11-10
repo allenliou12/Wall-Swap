@@ -76,7 +76,7 @@ RESOLUTION_SIZES = {"1080p": (1920, 1080), "1440p": (2560, 1440), "4k": (3840, 2
 RESOLUTION_LABELS = {"auto": "Match my screen", "1080p": "1080p", "1440p": "1440p", "4k": "4K"}  # display order
 MAX_WALLPAPERS = 50         # keep only the most recent on disk
 MAX_SEEN_IDS = 5000         # dedup history cap (oldest dropped first)
-USER_AGENT = "WallSwap/1.0 (Windows Desktop Wallpaper Changer)"
+USER_AGENT = f"WallSwap/{APP_VERSION} (Windows Desktop Wallpaper Changer)"
 # General Wallhaven searches skip wallpapers with fewer favourites than this (random-sorted
 # results are often low-rated). Not applied to the favourite-game searches: few game
 # wallpapers exist and most have only a handful of favourites.
@@ -84,7 +84,15 @@ WALLHAVEN_MIN_FAVORITES = 30
 
 # Download safety limits: only fetch over https from these sites (and their subdomains),
 # cap how much a single response may send, and give up on downloads that drag on
-ALLOWED_HOSTS = ("wallhaven.cc", "metmuseum.org")
+ALLOWED_HOSTS = ("wallhaven.cc", "metmuseum.org", "api.github.com")  # GitHub only for the update check
+
+# Update check: reads the newest release's version from GitHub and tells the user; it never downloads or
+# installs anything. The page it opens is this fixed address, never a link taken from the reply.
+UPDATE_API_URL = "https://api.github.com/repos/allenliou12/Wall-Swap/releases/latest"
+RELEASES_URL = "https://github.com/allenliou12/Wall-Swap/releases/latest"
+UPDATE_CHECK_SECONDS = 24 * 60 * 60       # between automatic checks
+UPDATE_RETRY_SECONDS = 60 * 60            # after an automatic check that got no answer
+UPDATE_NOTIFIED_FILE = WALLPAPER_DIR / "update_notified.txt"  # the version the user was last told about
 MAX_DOWNLOAD_BYTES = 50 * 1024 * 1024   # images
 MAX_API_BYTES = 5 * 1024 * 1024         # JSON responses
 DOWNLOAD_DEADLINE = 120                 # seconds per request, in total
@@ -124,6 +132,7 @@ DEFAULT_SETTINGS = {
         "movies": {"enabled": False, "searches": ["blade runner", "dune"]},
     },
     "exclude_words": [],
+    "check_for_updates": True,
     "game_name": "",
     "game_queries": [],
     "local_folders": [],
@@ -372,7 +381,8 @@ def settings_patch(before: dict, after: dict) -> dict:
 
     Folders are listed as adds and removes, not whole lists, for the same reason.
     """
-    paths = [("interval_minutes",), ("min_resolution",), ("exclude_words",), ("game_name",), ("game_queries",)]
+    paths = [("interval_minutes",), ("min_resolution",), ("exclude_words",), ("check_for_updates",), ("game_name",),
+             ("game_queries",)]
     paths += [("chances", s) for s in before["chances"]]
     paths += [("topics", t, f) for t in before["topics"] for f in ("enabled", "searches")]
     changes = []
@@ -1068,7 +1078,7 @@ def _check_url(url: str):
     host = (urlsplit(url).hostname or "").lower()
     allowed = any(host == h or host.endswith("." + h) for h in ALLOWED_HOSTS)
     if urlsplit(url).scheme != "https" or not allowed:
-        raise DownloadError(f"Refusing to fetch {url!r}: not an https Wallhaven/Met address")
+        raise DownloadError(f"Refusing to fetch {url!r}: not an https address WallSwap uses")
 
 
 def safe_get(url: str, *, params: dict | None = None, timeout: int = 15,
@@ -1096,6 +1106,41 @@ def safe_get(url: str, *, params: dict | None = None, timeout: int = 15,
                 chunks.append(chunk)
             return Fetched(resp.status_code, b"".join(chunks))
     raise DownloadError(f"Too many redirects for {url}")
+
+
+# ─── Update check ─────────────────────────────────────────────
+def parse_version(text) -> tuple[int, ...] | None:
+    """"1.2.0" or "v1.2" as (1, 2, 0, 0), or None for anything that isn't plain numbers and dots."""
+    if not isinstance(text, str):
+        return None
+    match = re.fullmatch(r"v?(\d{1,6}(?:\.\d{1,6}){0,3})", text.strip())
+    if not match:
+        return None
+    parts = [int(n) for n in match.group(1).split(".")]
+    return tuple(parts + [0] * (4 - len(parts)))
+
+
+def newer_version(latest: str, current: str = APP_VERSION) -> bool:
+    """Is latest a later version than current? False when either can't be read as a version."""
+    new, now = parse_version(latest), parse_version(current)
+    return new is not None and now is not None and new > now
+
+
+def latest_release() -> str:
+    """The version of WallSwap's newest GitHub release, like "1.2.0". Raises on any network, HTTP or format problem."""
+    resp = safe_get(UPDATE_API_URL, max_bytes=MAX_API_BYTES)
+    resp.raise_for_status()
+    tag = resp.json()["tag_name"]
+    if parse_version(tag) is None:
+        raise ValueError(f"GitHub sent an odd version: {str(tag)[:50]!r}")
+    return tag.strip().removeprefix("v")
+
+
+def update_already_notified(version: str) -> bool:
+    try:
+        return UPDATE_NOTIFIED_FILE.read_text(encoding="utf-8").strip() == version
+    except (OSError, UnicodeDecodeError):
+        return False
 
 
 # ─── Sources ──────────────────────────────────────────────────
@@ -1496,6 +1541,8 @@ class WallSwapApp:
         self.history: collections.deque[Wallpaper] = collections.deque(maxlen=HISTORY_LENGTH)
         self.wallpapers_set = 0
         self.elapsed = 0
+        self.update_version: str | None = None  # a newer release found by the update check
+        self.next_update_check = 0.0            # time.monotonic() of the next automatic check; 0 = at startup
         self.retry_after: int | None = None  # seconds until a skipped or failed change is tried again
         self.failures = 0                    # failed changes in a row
         self.change_lock = threading.Lock()  # one wallpaper change at a time
@@ -1883,6 +1930,50 @@ class WallSwapApp:
             return "Couldn't save settings.json (is it read-only?), so nothing was saved."
         return "settings.json has a mistake in it, so nothing was saved. Fix it or delete it to go back to the defaults."
 
+    # ── Updates ──
+    def check_for_updates(self, _=None):
+        """Tray: ask GitHub now and always say what it answered."""
+        threading.Thread(target=self._check_for_updates, args=(True,), daemon=True).start()
+
+    def auto_check_for_updates(self):
+        """Timer thread: start the daily check when it is due and the user hasn't turned it off."""
+        if not settings.data["check_for_updates"] or time.monotonic() < self.next_update_check:
+            return
+        self.next_update_check = time.monotonic() + UPDATE_CHECK_SECONDS
+        threading.Thread(target=self._check_for_updates, args=(False,), daemon=True).start()
+
+    def _check_for_updates(self, manual: bool):
+        """Worker thread. An automatic check speaks up only once per new version; a manual one always answers."""
+        try:
+            latest = latest_release()
+        except Exception as e:  # offline, timeout, HTTP error or an odd reply
+            log.warning(f"Couldn't check for updates: {e}")
+            if manual:
+                self.notify("Couldn't check for updates right now.")
+            else:
+                self.next_update_check = time.monotonic() + UPDATE_RETRY_SECONDS
+            return
+        if not newer_version(latest):
+            log.info(f"Update check: {APP_VERSION} is the newest version (GitHub has {latest})")
+            self.update_version = None
+            self.refresh_menu()
+            if manual:
+                self.notify(f"You're up to date (WallSwap {APP_VERSION}).")
+            return
+        self.update_version = latest
+        self.refresh_menu()
+        if manual or not update_already_notified(latest):
+            self.notify(f"WallSwap {latest} is available (you have {APP_VERSION}). "
+                        "Click Update available in the tray menu to get it.", "Update available")
+            try:
+                UPDATE_NOTIFIED_FILE.write_text(latest, encoding="utf-8")
+            except OSError as e:
+                log.warning(f"Couldn't remember the update notice, it may show again: {e}")
+
+    def open_releases(self, _=None):
+        """Open WallSwap's Releases page; the user downloads and installs the update themselves."""
+        webbrowser.open(RELEASES_URL)
+
     def open_folder(self, _=None):
         """Open the wallpaper save folder."""
         os.startfile(str(WALLPAPER_DIR))
@@ -1946,6 +2037,7 @@ class WallSwapApp:
 
     def timer_loop(self):
         """Background timer that triggers wallpaper changes."""
+        self.auto_check_for_updates()
         # Initial wallpaper on startup
         self._change_wallpaper()
 
@@ -1953,6 +2045,7 @@ class WallSwapApp:
             time.sleep(5)
             if not self.running:
                 break
+            self.auto_check_for_updates()
             self.tick(5)
 
     def tick(self, seconds: int):
@@ -1969,6 +2062,8 @@ class WallSwapApp:
         has_current = lambda item: self.current is not None  # noqa: E731
         return pystray.Menu(
             pystray.MenuItem(f"WallSwap {APP_VERSION}", None, enabled=False),
+            pystray.MenuItem(lambda item: f"⬆ Update available: {self.update_version}", self.open_releases,
+                             visible=lambda item: self.update_version is not None),
             pystray.Menu.SEPARATOR,
             pystray.MenuItem("🔄 Next Wallpaper", self.next_wallpaper, default=True),
             pystray.MenuItem("⏮ Previous Wallpaper", self.previous_wallpaper,
@@ -1990,6 +2085,7 @@ class WallSwapApp:
             pystray.MenuItem("📂 My Folders", pystray.Menu(self.local_folder_items)),
             pystray.Menu.SEPARATOR,
             pystray.MenuItem("⚙️ Settings…", self.open_settings),
+            pystray.MenuItem("🔎 Check for Updates", self.check_for_updates),
             pystray.MenuItem("📁 WallSwap Folder", self.open_folder),
             pystray.Menu.SEPARATOR,
             pystray.MenuItem("❌ Quit", self.quit_app),
