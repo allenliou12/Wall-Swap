@@ -1486,7 +1486,11 @@ def get_new_wallpaper() -> Wallpaper | None:
 
 
 def download_wallpaper(fetch, attempts: int = 5) -> Wallpaper | None:
-    """Run an online fetcher and save its result as a JPEG in WALLPAPER_DIR."""
+    """Run an online fetcher and save its result as a JPEG in WALLPAPER_DIR.
+
+    A download that already is an ordinary JPEG is kept byte for byte (saving it again would only lose
+    quality); anything else is converted.
+    """
     for attempt in range(attempts):
         try:
             wallpaper = fetch()
@@ -1497,9 +1501,13 @@ def download_wallpaper(fetch, attempts: int = 5) -> Wallpaper | None:
                 final_path = WALLPAPER_DIR / final_name
 
                 with Image.open(wallpaper.path) as img:
-                    img = img.convert("RGB")
-                    img.save(str(final_path), "JPEG", quality=95)
-
+                    keep = img.format == "JPEG" and img.mode in ("RGB", "L")
+                    if keep:
+                        img.load()  # decode it all, so a cut-off download raises here and is never shown
+                    else:
+                        img.convert("RGB").save(str(final_path), "JPEG", quality=95)
+                if keep:
+                    os.replace(wallpaper.path, final_path)
                 Path(wallpaper.path).unlink(missing_ok=True)
                 log.info(f"Saved: {final_name}")
                 cleanup_old_wallpapers()
