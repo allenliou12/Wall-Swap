@@ -1,26 +1,27 @@
 # WallSwap — Architecture (one page)
 
-> How the code is built today. Checked against `wallpaper_changer.py` and `settings_window.py` on 2026-11-09.
+> How the code is built today. Checked against `wallpaper_changer.py` and `settings_window.py` on 2026-11-10 (version 1.1.0).
 > Update it when a section, thread, file on disk or new module appears.
 
 ## The parts
 
 Two files. `wallpaper_changer.py` holds everything but the window, split by `# ─── … ───` banners:
 
-| Section | Lines | Role tag | What it does |
-|---|---|---|---|
-| Configuration | `:56-237` | `app` / `sources` | paths, limits, default and legacy settings, topic labels and the old search lists |
-| Setup | `:238-258` | `app` | creates the WallSwap folder, Pillow pixel cap, logging (runs on import) |
-| Settings | `:259-499` | `app` | `_merge_settings`, migration, `clean_search`, `settings_patch`/`apply_patch`, `Settings` (settings.json, `.bak`, re-entrant lock), `Wallpaper` |
-| History + cleanup | `:500-540` | `sources` | seen ids, keep-newest-50 cleanup |
-| Windows API | `:541-634` | `windows` | desktop wallpaper, lock screen (WinRT), fullscreen check, screen size (`largest_screen`, `min_size`) |
-| Startup | `:635-781` | `windows` | Start with Windows: `Startup\WallSwap.lnk` via PowerShell + IShellLinkW |
-| Image validation | `:782-790` | `sources` | `fits_screen` |
-| Safe downloads | `:791-843` | `sources` | `safe_get`: host allow-list, size and time caps, checked redirects |
-| Sources | `:844-1058` | `sources` | Wallhaven, Met, local folders |
-| Core logic | `:1059-1184` | `app` | query pool from ticked topics, source availability, weights and shares, fallback order, save as JPEG |
-| System tray app | `:1185-1639` | `app` | `WallSwapApp`: menu, timer loop, favourites, UI queue, folder dialog, settings window wiring |
-| Entry point | `:1640-1650` | `windows` | single-instance mutex, start |
+| Section | Role tag | What it does |
+|---|---|---|
+| Configuration | `app` / `sources` | paths, limits, default and legacy settings, topic labels and the old search lists |
+| Setup | `app` | creates the WallSwap folder, Pillow pixel cap, logging (runs on import) |
+| Settings | `app` | `_merge_settings`, migration, `clean_search`, excluded words (`wallhaven_q`), `settings_patch`/`apply_patch`, `Settings` (settings.json, `.bak`, re-entrant lock), `Wallpaper` |
+| History + cleanup | `sources` | seen ids, blocked images (`blocked.txt`), keep-newest-50 cleanup |
+| Windows API | `windows` | desktop wallpaper, lock screen (WinRT), fullscreen check, screen size (`largest_screen`, `min_size`) |
+| Startup | `windows` | Start with Windows: `Startup\WallSwap.lnk` via PowerShell + IShellLinkW |
+| Image validation | `sources` | `fits_screen` |
+| Safe downloads | `sources` | `safe_get`: host allow-list, size and time caps, checked redirects |
+| Update check | `app` | `latest_release`, `newer_version`: reads the newest GitHub release's version |
+| Sources | `sources` | Wallhaven (pages 1-3, excluded words), Met, local folders |
+| Core logic | `app` | query pool from ticked topics, source availability, weights and shares, fallback order, save as JPEG |
+| System tray app | `app` | `WallSwapApp`: menu, timer loop and retries (`retry_plan`, `tick`), Previous, Never Show Again, favourites, update notice, UI queue, folder dialog, settings window wiring |
+| Entry point | `windows` | single-instance mutex, start |
 
 `settings_window.py` is the CustomTkinter settings window (`SettingsWindow`, `TagList`, `FolderList`). It never
 imports `wallpaper_changer`: `WallSwapApp._show_settings` hands it a `WindowDeps` with a settings snapshot and
@@ -33,15 +34,18 @@ the functions it needs. Both `customtkinter` and `settings_window` are imported 
 - **Tray thread**: `pystray` via `icon.run_detached`; menu callbacks. Anything that needs Tk goes through
   `post_to_ui`, a queue `_drain_ui` empties every `UI_POLL_MS`. One Add Folder may be pending at a time.
 - **Tray setup thread**: `_on_tray_ready` shows the icon, then starts the timer.
-- **Timer thread**: `timer_loop`: one change at start, then every `interval_minutes`, checking every 5 s.
-- **Change threads**: "Next Wallpaper" starts one; `change_lock` drops a second concurrent change (INV-13).
+- **Timer thread**: `timer_loop`: one change at start, then every `interval_minutes`, checking every 5 s. A skipped or
+  failed change is retried after `RETRY_SECONDS` (INV-14). It also starts the daily update check.
+- **Change threads**: Next, Previous and Never Show Again each start one; `change_lock` drops a second concurrent
+  change (INV-13).
+- **Update check threads**: one per check (daily or from the tray); they only set `update_version` and notify.
 - **Quit**: `quit_app` stops the timer loop, queues `_close_ui` (closes the window, ends mainloop) and stops the icon.
-- Shared state: `settings` (guarded by its `RLock`; readers take `snapshot()`), `WallSwapApp.current`.
+- Shared state: `settings` (guarded by its `RLock`; readers take `snapshot()`), `WallSwapApp.current`, `history`, `retry_after` and `update_version`.
 
 ## Files on disk
 
 In `~/Pictures/WallSwap`: `settings.json` · `settings.json.bak` (the pre-settings-window file, kept once) ·
-`wallswap.log` (rotating) · `seen_ids.txt` (downloaded ids) · `seen_local.txt` (local cycle) ·
+`wallswap.log` (rotating) · `seen_ids.txt` (downloaded ids) · `seen_local.txt` (local cycle) · `blocked.txt` (Never Show Again) · `update_notified.txt` (last version announced) ·
 `wallswap_<wallhaven|met>_<timestamp>.jpg` (newest 50) · `_temp_*.jpg` (in-flight) · `Favourites/` (never cleaned).
 
 Outside it: `%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup\WallSwap.lnk`, only when the user turns on
