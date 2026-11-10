@@ -23,7 +23,10 @@ if sys.platform == "win32":
 else:
     tk = None
 
-pytestmark = pytest.mark.skipif(sys.platform != "win32", reason="real fullscreen windows require Windows")
+# These open real fullscreen windows and take the keyboard focus, so they only run when asked for
+pytestmark = pytest.mark.skipif(
+    sys.platform != "win32" or os.environ.get("WALLSWAP_DESKTOP_TESTS") != "1",
+    reason="opens real fullscreen windows on a Windows desktop; run with: uv run pytest --desktop")
 
 WS_CAPTION = 0x00C00000  # Both bits must be present for a full title bar.
 GWL_STYLE = -16  # Read the native style, not Tk's requested appearance.

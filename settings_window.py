@@ -37,6 +37,7 @@ class WindowDeps:
     on_closed: Callable[[], None]
     game_name_max: int
     version: str = ""                                 # shown in the title bar
+    resolution_labels: dict[str, str] = dataclasses.field(default_factory=dict)  # min_resolution value -> label
     # (search, done): counts Wallhaven's wallpapers off the Tk thread, then calls done(count or None) on it
     count_search: Callable[[str, Callable[[int | None], None]], None] | None = None
 
@@ -47,7 +48,7 @@ def search_check_message(count: int | None, is_game: bool) -> str:
     if count is None:
         return "Added. Couldn't check Wallhaven right now."
     if count == 0:
-        return "Added, but Wallhaven has no 1440p+ wallpapers for this. Try a different spelling or a broader term."
+        return "Added, but Wallhaven has nothing big enough for your screen for this search. Try a different spelling or a broader term."
     noun = "wallpaper" if count == 1 else "wallpapers"
     return f"Added. {count:,} {noun} on Wallhaven" if is_game else f"Added. About {count:,} {noun} on Wallhaven"
 
@@ -278,6 +279,7 @@ class SettingsWindow(ctk.CTkToplevel):
         self._build_folders(body)
         self._build_mix(body)
         self._build_interval(body)
+        self._build_resolution(body)
         self._build_startup(body)
         self._build_footer()
         self._refresh_shares()
@@ -352,6 +354,17 @@ class SettingsWindow(ctk.CTkToplevel):
         self._interval.set(_interval_label(stored) if stored in self.deps.interval_choices else "")
         self._interval.pack(anchor="w")
 
+    def _build_resolution(self, body):
+        self._heading(body, "Smallest image to use")
+        self._resolution_by_label = {label: value for value, label in self.deps.resolution_labels.items()}
+        self._resolution = ctk.CTkSegmentedButton(body, values=list(self._resolution_by_label))
+        stored = self._snapshot["min_resolution"]
+        # A hand-set value that isn't one of the choices behaves as the first one (match the screen) and is kept
+        self._resolution.set(self.deps.resolution_labels.get(stored) or next(iter(self._resolution_by_label), ""))
+        self._resolution.pack(anchor="w")
+        ctk.CTkLabel(body, text="Smaller images are skipped, in your own folders too. Match my screen never asks "
+                                "for more than 1440p.", text_color=HINT_COLOR, anchor="w").pack(fill="x")
+
     def _build_startup(self, body):
         self._heading(body, "Start with Windows")
         self._startup = ctk.CTkSwitch(body, text="Start WallSwap when I sign in")
@@ -389,8 +402,13 @@ class SettingsWindow(ctk.CTkToplevel):
             chances[source] = round(self._sliders[source].get() / 100, 2)
         topics = {t: {"enabled": row.check.get() == 1, "searches": row.searches()}
                   for t, row in self._topics.items()}
+        resolution = self._resolution_by_label.get(self._resolution.get(), snap["min_resolution"])
+        if snap["min_resolution"] not in self.deps.resolution_labels and resolution == next(
+                iter(self.deps.resolution_labels), None):
+            resolution = snap["min_resolution"]  # the hand-set value was only shown as the first choice
         return {
             "interval_minutes": self._interval_by_label.get(self._interval.get(), snap["interval_minutes"]),
+            "min_resolution": resolution,
             "game_name": self._game_name.get().strip()[:self.deps.game_name_max],
             "game_queries": self._game_tags.values(),
             "chances": chances,

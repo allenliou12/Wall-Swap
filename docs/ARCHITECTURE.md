@@ -13,7 +13,7 @@ Two files. `wallpaper_changer.py` holds everything but the window, split by `# â
 | Setup | `:238-258` | `app` | creates the WallSwap folder, Pillow pixel cap, logging (runs on import) |
 | Settings | `:259-499` | `app` | `_merge_settings`, migration, `clean_search`, `settings_patch`/`apply_patch`, `Settings` (settings.json, `.bak`, re-entrant lock), `Wallpaper` |
 | History + cleanup | `:500-540` | `sources` | seen ids, keep-newest-50 cleanup |
-| Windows API | `:541-634` | `windows` | desktop wallpaper, lock screen (WinRT), fullscreen check |
+| Windows API | `:541-634` | `windows` | desktop wallpaper, lock screen (WinRT), fullscreen check, screen size (`largest_screen`, `min_size`) |
 | Startup | `:635-781` | `windows` | Start with Windows: `Startup\WallSwap.lnk` via PowerShell + IShellLinkW |
 | Image validation | `:782-790` | `sources` | `fits_screen` |
 | Safe downloads | `:791-843` | `sources` | `safe_get`: host allow-list, size and time caps, checked redirects |

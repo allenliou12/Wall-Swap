@@ -16,7 +16,7 @@ def test_no_answer_says_so():
 @pytest.mark.parametrize("is_game", [False, True])
 def test_zero_warns_but_keeps_the_tag(is_game):
     message = sw.search_check_message(0, is_game)
-    assert message.startswith("Added, but Wallhaven has no 1440p+ wallpapers")
+    assert message.startswith("Added, but Wallhaven has nothing big enough for your screen")
     assert "different spelling" in message
 
 

@@ -1,6 +1,6 @@
 """
 WallSwap - Fresh Desktop Wallpapers on Autopilot
-A lightweight system tray app that sets random 1440p+ wallpapers from
+A lightweight system tray app that sets random screen-sized wallpapers from
 Wallhaven, The Met's public-domain paintings and your own folders as your
 Windows desktop and lock screen background.
 
@@ -65,8 +65,13 @@ LOG_FILE = WALLPAPER_DIR / "wallswap.log"
 HISTORY_FILE = WALLPAPER_DIR / "seen_ids.txt"
 SETTINGS_FILE = WALLPAPER_DIR / "settings.json"
 FAVOURITES_DIR = WALLPAPER_DIR / "Favourites"
+# The most "Match my screen" ever asks an image to be. A smaller screen asks only for its own size (see
+# min_size), so a 1080p screen can use 1080p images; a bigger one still accepts 1440p unless 4K is picked.
 MIN_WIDTH = 2560
 MIN_HEIGHT = 1440
+# The min_resolution setting: the smallest image used. "auto" follows the screen; the rest are fixed sizes.
+RESOLUTION_SIZES = {"1080p": (1920, 1080), "1440p": (2560, 1440), "4k": (3840, 2160)}
+RESOLUTION_LABELS = {"auto": "Match my screen", "1080p": "1080p", "1440p": "1440p", "4k": "4K"}  # display order
 MAX_WALLPAPERS = 50         # keep only the most recent on disk
 MAX_SEEN_IDS = 5000         # dedup history cap (oldest dropped first)
 USER_AGENT = "WallSwap/1.0 (Windows Desktop Wallpaper Changer)"
@@ -98,8 +103,10 @@ MAX_WINDOWS_PATH = 260  # MAX_PATH: the Windows folder always fits; a longer ans
 #            images, used for its share once all of its Wallhaven wallpapers have been shown
 #            (so other folders can't dilute it)
 #   local_folders: your own image folders (top-level images only, not subfolders)
+#   min_resolution: a key of RESOLUTION_LABELS; anything else counts as "auto"
 DEFAULT_SETTINGS = {
     "interval_minutes": 30,
+    "min_resolution": "auto",
     "sources": {"wallhaven": True, "game": True, "museum": True, "local": True},
     "chances": {"wallhaven": 0.45, "museum": 0.15, "local": 0.2, "game": 0.2},
     "topics": {
@@ -316,7 +323,7 @@ def settings_patch(before: dict, after: dict) -> dict:
 
     Folders are listed as adds and removes, not whole lists, for the same reason.
     """
-    paths = [("interval_minutes",), ("game_name",), ("game_queries",)]
+    paths = [("interval_minutes",), ("min_resolution",), ("game_name",), ("game_queries",)]
     paths += [("chances", s) for s in before["chances"]]
     paths += [("topics", t, f) for t in before["topics"] for f in ("enabled", "searches")]
     changes = []
@@ -556,6 +563,104 @@ class MONITORINFO(ctypes.Structure):
         ("rcWork", ctypes.wintypes.RECT),
         ("dwFlags", ctypes.wintypes.DWORD),
     ]
+
+
+class DISPLAY_DEVICEW(ctypes.Structure):
+    _fields_ = [
+        ("cb", ctypes.wintypes.DWORD),
+        ("DeviceName", ctypes.c_wchar * 32),
+        ("DeviceString", ctypes.c_wchar * 128),
+        ("StateFlags", ctypes.wintypes.DWORD),
+        ("DeviceID", ctypes.c_wchar * 128),
+        ("DeviceKey", ctypes.c_wchar * 128),
+    ]
+
+
+class DEVMODEW(ctypes.Structure):
+    """The display form of DEVMODEW (220 bytes); only the pixel size is read."""
+    _fields_ = [
+        ("dmDeviceName", ctypes.c_wchar * 32),
+        ("dmSpecVersion", ctypes.wintypes.WORD),
+        ("dmDriverVersion", ctypes.wintypes.WORD),
+        ("dmSize", ctypes.wintypes.WORD),
+        ("dmDriverExtra", ctypes.wintypes.WORD),
+        ("dmFields", ctypes.wintypes.DWORD),
+        ("dmPositionX", ctypes.wintypes.LONG),
+        ("dmPositionY", ctypes.wintypes.LONG),
+        ("dmDisplayOrientation", ctypes.wintypes.DWORD),
+        ("dmDisplayFixedOutput", ctypes.wintypes.DWORD),
+        ("dmColor", ctypes.c_short),
+        ("dmDuplex", ctypes.c_short),
+        ("dmYResolution", ctypes.c_short),
+        ("dmTTOption", ctypes.c_short),
+        ("dmCollate", ctypes.c_short),
+        ("dmFormName", ctypes.c_wchar * 32),
+        ("dmLogPixels", ctypes.wintypes.WORD),
+        ("dmBitsPerPel", ctypes.wintypes.DWORD),
+        ("dmPelsWidth", ctypes.wintypes.DWORD),
+        ("dmPelsHeight", ctypes.wintypes.DWORD),
+        ("dmDisplayFlags", ctypes.wintypes.DWORD),
+        ("dmDisplayFrequency", ctypes.wintypes.DWORD),
+        ("dmICMMethod", ctypes.wintypes.DWORD),
+        ("dmICMIntent", ctypes.wintypes.DWORD),
+        ("dmMediaType", ctypes.wintypes.DWORD),
+        ("dmDitherType", ctypes.wintypes.DWORD),
+        ("dmReserved1", ctypes.wintypes.DWORD),
+        ("dmReserved2", ctypes.wintypes.DWORD),
+        ("dmPanningWidth", ctypes.wintypes.DWORD),
+        ("dmPanningHeight", ctypes.wintypes.DWORD),
+    ]
+
+
+DISPLAY_DEVICE_ATTACHED_TO_DESKTOP = 0x1  # the display is part of the desktop (not a disconnected output)
+ENUM_CURRENT_SETTINGS = -1  # ask for the mode the display is in now
+MAX_DISPLAYS = 64  # far more outputs than any PC has; only stops a misbehaving driver from looping forever
+
+
+def largest_screen() -> tuple[int, int] | None:
+    """The biggest connected screen as (long side, short side) in real pixels, or None if Windows won't say.
+
+    Display modes are real pixels whatever the scaling (125%, 150%...) and whether or not the process is
+    DPI-aware; GetSystemMetrics would give scaled numbers before the Tk root exists.
+    """
+    try:
+        user32 = ctypes.windll.user32
+        best = None
+        for index in range(MAX_DISPLAYS):
+            device = DISPLAY_DEVICEW()
+            device.cb = ctypes.sizeof(device)
+            if not user32.EnumDisplayDevicesW(None, index, ctypes.byref(device), 0):
+                break
+            if not device.StateFlags & DISPLAY_DEVICE_ATTACHED_TO_DESKTOP:
+                continue
+            mode = DEVMODEW()
+            mode.dmSize = ctypes.sizeof(mode)
+            if not user32.EnumDisplaySettingsW(device.DeviceName, ENUM_CURRENT_SETTINGS, ctypes.byref(mode)):
+                continue
+            # A screen turned to portrait still needs a picture as big as its long side
+            size = (max(mode.dmPelsWidth, mode.dmPelsHeight), min(mode.dmPelsWidth, mode.dmPelsHeight))
+            if size[1] > 0 and (best is None or size[0] * size[1] > best[0] * best[1]):
+                best = size
+        return best
+    except Exception as e:
+        # HZ-2: absorbed so a change still happens (with the 1440p minimum), but never silently
+        log.warning(f"Couldn't read the screen size, asking for {MIN_WIDTH}x{MIN_HEIGHT}: {e}")
+        return None
+
+
+def min_size() -> tuple[int, int]:
+    """The smallest image WallSwap uses: the size picked in settings, or for "Match my screen" the biggest
+    screen's size, but never more than MIN_WIDTH x MIN_HEIGHT.
+
+    Read fresh each time, so a new choice or a monitor plugged in or out applies from the next change.
+    """
+    picked = RESOLUTION_SIZES.get(settings.data["min_resolution"])
+    if picked:
+        return picked
+    screen = largest_screen()
+    if screen is None:
+        return MIN_WIDTH, MIN_HEIGHT
+    return min(screen[0], MIN_WIDTH), min(screen[1], MIN_HEIGHT)
 
 
 def set_wallpaper(image_path: str):
@@ -856,10 +961,13 @@ def set_start_with_windows(enabled: bool, write=write_shortcut) -> None:
 # ─── Image Validation ─────────────────────────────────────────
 def fits_screen(w: int, h: int, min_ratio: float = 1.0, max_ratio: float = float("inf"),
                 check_size: bool = True) -> bool:
-    """Is a w x h image a usable wallpaper: wider than tall (by min_ratio..max_ratio) and 1440p+?"""
+    """Is a w x h image a usable wallpaper: wider than tall (by min_ratio..max_ratio) and at least min_size()?"""
     if h <= 0 or not (min_ratio < w / h <= max_ratio):
         return False
-    return not check_size or (w >= MIN_WIDTH and h >= MIN_HEIGHT)
+    if not check_size:
+        return True
+    min_w, min_h = min_size()
+    return w >= min_w and h >= min_h
 
 
 # ─── Safe downloads ───────────────────────────────────────────
@@ -921,10 +1029,11 @@ WALLHAVEN_SEARCH_URL = "https://wallhaven.cc/api/v1/search"
 
 def wallhaven_filters() -> dict:
     """The filters every Wallhaven search uses; the add-a-search check counts with the same ones."""
+    min_w, min_h = min_size()
     return {
         "categories": "110",      # general + anime (no people: avoids celebrity photos)
         "purity": "100",          # SFW only
-        "atleast": f"{MIN_WIDTH}x{MIN_HEIGHT}",
+        "atleast": f"{min_w}x{min_h}",
         "ratios": "landscape",
     }
 
@@ -942,7 +1051,7 @@ def count_wallhaven(query: str) -> int:
 
 def fetch_from_wallhaven(queries: list[str], sorting: str | None = None,
                          source: str = "wallhaven") -> Wallpaper | None:
-    """Fetch a random 1440p+ wallpaper from Wallhaven for one of the searches."""
+    """Fetch a random screen-sized wallpaper from Wallhaven for one of the searches."""
     if not queries:  # nothing ticked, or game_queries emptied: there is no general fallback
         return None
     query = random.choice(queries)
@@ -1099,7 +1208,7 @@ def _try_museum_object(obj_id: int) -> Wallpaper | None:
 
 
 def is_landscape_wallpaper(image_path: Path) -> bool:
-    """Check a local image is 1440p+ and landscape."""
+    """Check a local image is big enough for the screen and landscape."""
     try:
         # Your own files are only measured here, not decoded (Windows draws them), so the
         # pixel limit for downloads doesn't apply. Opening still refuses truly absurd ones
@@ -1543,6 +1652,7 @@ class WallSwapApp:
             mix_labels=MIX_LABELS,
             source_order=SOURCE_ORDER,
             interval_choices=INTERVAL_CHOICES,
+            resolution_labels=RESOLUTION_LABELS,
             shares=lambda d: source_shares(source_weights(d)),
             drop_reason=drop_reason,
             clean_search=clean_search,
@@ -1712,7 +1822,7 @@ class WallSwapApp:
         log.info(f"WallSwap {APP_VERSION} starting up!")
         log.info(f"Wallpaper folder: {WALLPAPER_DIR}")
         log.info(f"Interval: {settings.interval_seconds // 60} minutes")
-        log.info(f"Min resolution: {MIN_WIDTH}x{MIN_HEIGHT}")
+        log.info("Min resolution: %dx%d" % min_size())
         log.info("=" * 50)
 
         # Imported here, not at the top: customtkinter starts darkdetect and its root makes the whole process

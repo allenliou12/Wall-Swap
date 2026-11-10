@@ -7,7 +7,7 @@ Small Windows tray app that changes my wallpaper (and lock screen) every 30 minu
 - Public-domain paintings from [the Met's open access API](https://metmuseum.github.io/)
 - Your own folders of screenshots or wallpapers
 
-Everything is 2560x1440 or bigger and landscape. It doesn't repeat images, and it won't change the wallpaper while a fullscreen game is running. No API keys needed.
+Everything is landscape and at least as big as your screen (your biggest one, if you have several). Matching the screen never asks for more than 2560x1440, so a 4K screen still gets 1440p images; pick 1080p, 1440p or 4K yourself if you'd rather. It doesn't repeat images, and it won't change the wallpaper while a fullscreen game is running. No API keys needed.
 
 ## Installing it
 
@@ -58,6 +58,7 @@ Right-click the tray icon and pick Settings… to open it again.
 - **My folders:** add or remove your own image folders. Only images directly in a folder are used, not subfolders, and WallSwap never changes anything in them.
 - **Source mix:** one slider each for Wallhaven, Met paintings, your folders and your favourite game. The percentage next to each is its real share of changes. A source with nothing to use (no folders, no game searches, no ticked topics) or turned off drops out and says why.
 - **Change every:** 15 min, 30 min, 1 hour or 2 hours.
+- **Smallest image to use:** Match my screen, 1080p, 1440p or 4K. Smaller images are skipped, in your own folders too.
 - **Start with Windows:** puts a WallSwap shortcut in your Startup folder (or takes it out).
 
 Save applies from the next wallpaper change. Cancel throws away what you changed.
@@ -85,6 +86,7 @@ The window saves to `Pictures\WallSwap\settings.json`. You can still edit it by 
 ```json
 {
   "interval_minutes": 30,
+  "min_resolution": "auto",
   "sources": {"wallhaven": true, "game": true, "museum": true, "local": true},
   "chances": {"wallhaven": 0.45, "museum": 0.15, "local": 0.2, "game": 0.2},
   "topics": {
@@ -100,6 +102,7 @@ The window saves to `Pictures\WallSwap\settings.json`. You can still edit it by 
 
 - `chances` are weights, not percentages; they're compared with each other.
 - The nine topic names are fixed; their searches are yours to change.
+- `min_resolution` is `"auto"` (match the screen), `"1080p"`, `"1440p"` or `"4k"`.
 
 If you're upgrading from the version before the settings window, your old file is copied to `settings.json.bak` the first time the new version saves, and your old searches, game and folders carry over.
 

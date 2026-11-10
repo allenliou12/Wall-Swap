@@ -27,8 +27,12 @@ IDs are stable: never renumber, retire with a note.
 - **INV-5 · Safe for work.** Wallhaven searches ask for SFW only (`purity=100`) and general + anime categories, no
   people (`categories=110`). Code: `fetch_from_wallhaven` `:856-857`. Search text the user types only ever fills
   `q`.
-- **INV-6 · Wallpaper-shaped images only.** Everything shown is landscape and at least `MIN_WIDTH` × `MIN_HEIGHT`
-  (2560 × 1440); Met paintings also fall between `MUSEUM_MIN_RATIO` and `MUSEUM_MAX_RATIO`. Code: `fits_screen`
+- **INV-6 · Wallpaper-shaped images only.** Everything shown is landscape and at least `min_size()`: the size the
+  user picked (`min_resolution`: 1080p, 1440p or 4K), or for "auto" (and any unknown value) the biggest connected
+  screen's real pixel size (long side × short side), each side capped at `MIN_WIDTH` × `MIN_HEIGHT`
+  (2560 × 1440), and exactly that cap when Windows won't report a screen. It is read fresh on every check, and
+  Wallhaven's `atleast` filter uses the same size. Met paintings also fall between `MUSEUM_MIN_RATIO` and
+  `MUSEUM_MAX_RATIO`. Tests: `tests/test_screen_size.py`. Code: `largest_screen`, `min_size`, `fits_screen`
   `:783`, `:64-65`, `:160-161`.
 - **INV-7 · Met paintings are public domain.** An object without `isPublicDomain` is never downloaded.
   Code: `_try_museum_object` `:970`.
@@ -61,8 +65,9 @@ IDs are stable: never renumber, retire with a note.
 - **INV-14 · No change while a fullscreen app (a game) is in front** — the change is skipped, not queued. Code:
   `_do_change_wallpaper` `:1267`, `is_fullscreen_app_running` `:598`. "Fullscreen" = the foreground window covers
   the whole monitor it is on (any monitor), is not the desktop, and is not an ordinary maximized window (maximized
-  *with* a full title bar). Mac-tested with a faked user32 (`tests/test_fullscreen.py`); real Windows behaviour is
-  checked by hand on a Windows PC.
+  *with* a full title bar). Tested with a faked user32 (`tests/test_fullscreen.py`); the real-window checks
+  (`tests/test_fullscreen_windows.py`) open fullscreen windows and take the focus, so they run only with
+  `uv run pytest --desktop`.
 - **INV-15 · Turned-off, empty and 0% sources are never used,** including as a fallback. A source with nothing to
   use (no ticked topic with searches, no folders, no game searches or game folders) or with weight 0 gets no share;
   the percentages the settings window shows are the real shares. An empty search list never falls back to other
