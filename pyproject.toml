@@ -1,6 +1,6 @@
 [project]
 name = "wallswap"
-version = "1.0.2"
+version = "1.1.0"
 description = "Windows tray app that rotates screen-sized wallpapers from Wallhaven, the Met museum and your own folders"
 requires-python = ">=3.13"
 dependencies = [

@@ -444,7 +444,7 @@ wheels = [
 
 [[package]]
 name = "wallswap"
-version = "1.0.2"
+version = "1.1.0"
 source = { virtual = "." }
 dependencies = [
     { name = "customtkinter" },

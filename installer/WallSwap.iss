@@ -8,7 +8,7 @@
 ; both shortcuts and the Start menu entry; Pictures\WallSwap (settings, favourites, downloads) is never touched.
 
 #ifndef AppVersion
-  #define AppVersion "1.0.2"
+  #define AppVersion "1.1.0"
 #endif
 
 [Setup]

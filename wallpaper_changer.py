@@ -56,7 +56,7 @@ except ImportError:
     sys.exit(1)
 
 # ─── Configuration ────────────────────────────────────────────
-APP_VERSION = "1.0.2"  # keep equal to pyproject.toml's version (a test checks); shown in the tray, window and log
+APP_VERSION = "1.1.0"  # keep equal to pyproject.toml's version (a test checks); shown in the tray, window and log
 # A PyInstaller build sets sys.frozen; its bundled files (the icon) unpack to sys._MEIPASS, not next to this file
 FROZEN = getattr(sys, "frozen", False)
 SCRIPT_DIR = Path(__file__).resolve().parent
