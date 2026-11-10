@@ -327,10 +327,7 @@ class SettingsWindow(ctk.CTkToplevel):
 
     def _build_game(self, body):
         self._heading(body, "Favourite games")
-        ctk.CTkLabel(body, text="Games you want to see more of. Type a game's name and press Add; each one is "
-                                "searched on Wallhaven and all are equally likely. Together they get their own "
-                                "share of wallpaper changes: the Favourite games slider under Source mix. "
-                                "Click a game to remove it.",
+        ctk.CTkLabel(body, text="Games you want to see more of. They share the Favourite games slider below.",
                      text_color=HINT_COLOR, anchor="w", justify="left", wraplength=560).pack(fill="x")
         self._game_tags = TagList(body, self._snapshot["game_queries"], self.deps.clean_search,
                                   on_change=self._refresh_shares, count_search=self.deps.count_search, is_game=True,
