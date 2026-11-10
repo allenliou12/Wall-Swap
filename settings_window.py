@@ -319,46 +319,28 @@ class SettingsWindow(ctk.CTkToplevel):
     def _build_exclude(self, body):
         self._heading(body, "Never show")
         ctk.CTkLabel(body, text="Wallhaven wallpapers tagged with these words are left out, in every topic and "
-                                "the favourite game. One word each, like car.", text_color=HINT_COLOR, anchor="w",
+                                "your favourite games. One word each, like car.", text_color=HINT_COLOR, anchor="w",
                      justify="left", wraplength=560).pack(fill="x")
         self._exclude = TagList(body, self._snapshot["exclude_words"], self.deps.clean_exclude or (lambda t, e: None),
                                 placeholder="Add a word", problem=self.deps.exclude_problem)
         self._exclude.pack(fill="x")
 
     def _build_game(self, body):
-        self._heading(body, "Favourite game (optional)")
-        ctk.CTkLabel(body, text="One game you want to see more of. It gets its own share of wallpaper changes: "
-                                "the Favourite game slider under Source mix. Leave both boxes empty to skip it.",
-                     text_color=HINT_COLOR, anchor="w", justify="left", wraplength=560).pack(fill="x")
-        ctk.CTkLabel(body, text="1. Name", anchor="w").pack(fill="x", pady=(6, 0))
-        limit = self.deps.game_name_max
-        self._game_name = ctk.CTkEntry(
-            body, placeholder_text="For example: Hollow Knight", validate="key",
-            validatecommand=(self.register(lambda text: len(text) <= limit), "%P"))
-        if self._snapshot["game_name"]:
-            self._game_name.insert(0, self._snapshot["game_name"][:limit])
-        self._game_name.pack(fill="x")
-        ctk.CTkLabel(body, text="2. What to search Wallhaven for", anchor="w").pack(fill="x", pady=(6, 0))
-        ctk.CTkLabel(body, text="Usually just the game's name; it is added for you when you leave the name box. "
-                                "Add more for sequels or other spellings. Click a search to remove it.",
+        self._heading(body, "Favourite games")
+        ctk.CTkLabel(body, text="Games you want to see more of. Type a game's name and press Add; each one is "
+                                "searched on Wallhaven and all are equally likely. Together they get their own "
+                                "share of wallpaper changes: the Favourite games slider under Source mix. "
+                                "Click a game to remove it.",
                      text_color=HINT_COLOR, anchor="w", justify="left", wraplength=560).pack(fill="x")
         self._game_tags = TagList(body, self._snapshot["game_queries"], self.deps.clean_search,
-                                  on_change=self._refresh_shares, count_search=self.deps.count_search, is_game=True)
+                                  on_change=self._refresh_shares, count_search=self.deps.count_search, is_game=True,
+                                  placeholder="Add a game, for example Hollow Knight")
         self._game_tags.pack(fill="x")
-        self._game_name.bind("<FocusOut>", lambda _e: self._name_to_search())
-        self._game_name.bind("<Return>", lambda _e: self._name_to_search())
-
-    def _name_to_search(self):
-        """A typed game name with no searches yet becomes the first search, so the game has something to use."""
-        name = self._game_name.get().strip()
-        if name and not self._game_tags.values():
-            self._game_tags.add(name)
 
     def _build_folders(self, body):
         self._heading(body, "My folders")
-        name = self._snapshot["game_name"]
         self._folders = FolderList(body, self._snapshot["local_folders"], self._snapshot["game_folders"],
-                                   f"({name or 'game'})", self.deps.ask_folder, on_change=self._refresh_shares)
+                                   "(favourite games)", self.deps.ask_folder, on_change=self._refresh_shares)
         self._folders.pack(fill="x")
 
     def _build_mix(self, body):
@@ -477,7 +459,6 @@ class SettingsWindow(ctk.CTkToplevel):
             "min_resolution": resolution,
             "exclude_words": self._exclude.values(),
             "check_for_updates": self._updates.get() == 1,
-            "game_name": self._game_name.get().strip()[:self.deps.game_name_max],
             "game_queries": self._game_tags.values(),
             "chances": chances,
             "topics": {**snap["topics"], **topics},

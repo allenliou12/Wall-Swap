@@ -121,7 +121,9 @@ MAX_WINDOWS_PATH = 260  # MAX_PATH: the Windows folder always fits; a longer ans
 #   chances: relative weight of each source (they need not add up to 1); a source that is
 #            turned off, at 0 or has nothing to use gets no share
 #   topics:  Wallhaven search groups; every search of a ticked topic is equally likely
-#   game_*:  a dedicated Wallhaven share for one favourite game. game_folders hold the game's
+#   game_*:  a dedicated Wallhaven share for the favourite games. game_queries is the list of games (each is
+#            searched by its name, all equally likely); game_name is from when there was one game and is no
+#            longer shown or edited, only kept so older files and versions still read. game_folders hold the games'
 #            images, used for its share once all of its Wallhaven wallpapers have been shown
 #            (so other folders can't dilute it)
 #   local_folders: your own image folders (top-level images only, not subfolders)
@@ -197,7 +199,7 @@ HISTORY_LENGTH = 20  # how many earlier wallpapers Previous can step back throug
 UI_POLL_MS = 100  # how often the Tk thread runs calls queued from the tray; fast enough to feel instant, cheap when idle
 SOURCE_LABELS = {
     "wallhaven": "Wallhaven",
-    "game": "Wallhaven (favourite game)",
+    "game": "Wallhaven (favourite games)",
     "museum": "The Met",
     "local": "Local folder",
 }
@@ -283,7 +285,7 @@ LEGACY_TOPIC_SEARCHES = {
 }
 # The four sources in the order the Settings window lists them, and their names there
 SOURCE_ORDER = ("wallhaven", "museum", "local", "game")
-MIX_LABELS = {"wallhaven": "Wallhaven", "museum": "Met paintings", "local": "My folders", "game": "Favourite game"}
+MIX_LABELS = {"wallhaven": "Wallhaven", "museum": "Met paintings", "local": "My folders", "game": "Favourite games"}
 
 # ─── Setup ────────────────────────────────────────────────────
 WALLPAPER_DIR.mkdir(parents=True, exist_ok=True)
@@ -1554,7 +1556,7 @@ def source_available(data: dict, source: str) -> bool:
 
 EMPTY_SOURCE_REASONS = {
     "wallhaven": "Tick a topic with searches",
-    "game": "Add game searches or folders",
+    "game": "Add a game or game folders",
     "local": "Add a folder to use this",
 }
 
@@ -1984,7 +1986,7 @@ class WallSwapApp:
         folders = local + [f for f in game if f not in local]
         if not folders:
             yield pystray.MenuItem("(no folders yet)", None, enabled=False)
-        game_tag = f"  ({settings.data['game_name'] or 'game'})"
+        game_tag = "  (favourite games)"
         for folder in folders:
             tag = game_tag if folder in game else ""
             yield pystray.MenuItem(f"✖ Remove  {folder}{tag}", self._remove_folder_action(folder))
@@ -2297,8 +2299,7 @@ class WallSwapApp:
                 *[self.interval_item(m) for m in INTERVAL_CHOICES])),
             pystray.MenuItem("🌐 Sources", pystray.Menu(
                 self.source_item("wallhaven", "Wallhaven (general)"),
-                self.source_item("game", lambda item: (
-                    f"Wallhaven: {name}" if (name := settings.data["game_name"]) else "Favourite game")),
+                self.source_item("game", "Favourite games"),
                 self.source_item("museum", "The Met (paintings)"),
                 self.source_item("local", "My folders"),
             )),

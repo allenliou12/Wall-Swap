@@ -58,7 +58,7 @@ def test_game_drops_out_without_searches_and_folders(tmp_path):
     data = _data(game_queries=[], game_folders=[])
     assert not wc.source_available(data, "game")
     assert "game" not in wc.source_weights(data)
-    assert wc.drop_reason(data, "game") == "Add game searches or folders"
+    assert wc.drop_reason(data, "game") == "Add a game or game folders"
 
     data["game_folders"] = [str(tmp_path)]
     assert wc.source_available(data, "game")

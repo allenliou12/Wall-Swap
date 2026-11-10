@@ -3,7 +3,7 @@
 Small Windows tray app that changes my wallpaper (and lock screen) every 30 minutes. I got tired of looking at the same background, so this pulls from a few places:
 
 - [Wallhaven](https://wallhaven.cc) searches on topics you pick: scenery, space, cities, night skies, dark fantasy, games, anime and so on. SFW only, and low-rated stuff is skipped.
-- Wallpapers for a favourite game, if you set one (mine is Path of Exile)
+- Wallpapers for your favourite games, if you add any (mine is Path of Exile)
 - Public-domain paintings from [the Met's open access API](https://metmuseum.github.io/)
 - Your own folders of screenshots or wallpapers
 
@@ -53,13 +53,13 @@ The first time it runs, the settings window opens so you can pick what you want.
 
 Right-click the tray icon and pick Settings… to open it again.
 
-<img src="docs/settings-window.png" alt="The WallSwap settings window: topics, words to never show, favourite game, folders, source mix and interval" width="420">
+<img src="docs/settings-window.png" alt="The WallSwap settings window: topics, words to never show, favourite games, folders, source mix and interval" width="420">
 
 - **Topics:** tick the ones you want. Click a topic's arrow to see its searches; click a search to remove it, or type your own and press Add. Only ticked topics are searched, and every search in them is equally likely.
-- **Never show:** words to keep out of Wallhaven results, in every topic and the favourite game. One word each (like `car`), up to 10. Met paintings and your own folders aren't affected.
-- **Favourite game (optional):** one game you want to see more of, with its own slider in the source mix. Type its name and WallSwap adds it as the first Wallhaven search; add more searches for sequels or other spellings. Leave it empty if you don't want one. There aren't many game wallpapers, so once they've all been shown, that share uses the game's folders instead.
+- **Never show:** words to keep out of Wallhaven results, in every topic and your favourite games. One word each (like `car`), up to 10. Met paintings and your own folders aren't affected.
+- **Favourite games:** games you want to see more of. Type a game's name and press Add; add as many as you like (a sequel is just another one). Each is searched on Wallhaven, all are equally likely, and together they have their own slider in the source mix. Leave the list empty if you don't want any. There aren't many game wallpapers, so once they've all been shown, that share uses the game folders instead.
 - **My folders:** add or remove your own image folders. Only images directly in a folder are used, not subfolders, and WallSwap never changes anything in them.
-- **Source mix:** one slider each for Wallhaven, Met paintings, your folders and your favourite game. The percentage next to each is its real share of changes. A source with nothing to use (no folders, no game searches, no ticked topics) or turned off drops out and says why.
+- **Source mix:** one slider each for Wallhaven, Met paintings, your folders and your favourite games. The percentage next to each is its real share of changes. A source with nothing to use (no folders, no game searches, no ticked topics) or turned off drops out and says why.
 - **Change every:** 15 min, 30 min, 1 hour or 2 hours.
 - **Smallest image to use:** Match my screen, 1080p, 1440p or 4K. Smaller images are skipped, in your own folders too.
 - **How the picture fits the screen:** As Windows has it (the default: WallSwap doesn't touch it), Fill, Fit or Span. Span stretches one picture across all your screens.
@@ -106,7 +106,6 @@ The window saves to `Pictures\WallSwap\settings.json`. You can still edit it by 
   },
   "exclude_words": ["car"],
   "check_for_updates": true,
-  "game_name": "Path of Exile",
   "game_queries": ["path of exile", "path of exile 2"],
   "local_folders": ["C:\\Users\\<you>\\Pictures\\Path of Exile 2"],
   "game_folders": ["C:\\Users\\<you>\\Pictures\\Path of Exile 2"]
@@ -115,6 +114,7 @@ The window saves to `Pictures\WallSwap\settings.json`. You can still edit it by 
 
 - `chances` are weights, not percentages; they're compared with each other.
 - The nine topic names are fixed; their searches are yours to change.
+- `game_queries` is the list of favourite games. An older file may also have `game_name`, from when there was only one game; it is no longer used.
 - `wallpaper_fit` is `"auto"` (leave Windows' own setting alone), `"fill"`, `"fit"` or `"span"`.
 - `min_resolution` is `"auto"` (match the screen), `"1080p"`, `"1440p"` or `"4k"`.
 
