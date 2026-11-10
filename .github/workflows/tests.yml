@@ -1,0 +1,23 @@
+name: Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  tests:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - name: Install
+        run: uv sync
+      - name: Lint
+        run: uv run ruff check .
+      # The tests that open real fullscreen windows need an interactive desktop; they stay off here (no --desktop)
+      - name: Test
+        run: uv run pytest -q
