@@ -54,7 +54,7 @@ except ImportError:
     sys.exit(1)
 
 # ─── Configuration ────────────────────────────────────────────
-APP_VERSION = "1.0.1"  # keep equal to pyproject.toml's version (a test checks); shown in the tray, window and log
+APP_VERSION = "1.0.2"  # keep equal to pyproject.toml's version (a test checks); shown in the tray, window and log
 # A PyInstaller build sets sys.frozen; its bundled files (the icon) unpack to sys._MEIPASS, not next to this file
 FROZEN = getattr(sys, "frozen", False)
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -916,6 +916,30 @@ def safe_get(url: str, *, params: dict | None = None, timeout: int = 15,
 
 
 # ─── Sources ──────────────────────────────────────────────────
+WALLHAVEN_SEARCH_URL = "https://wallhaven.cc/api/v1/search"
+
+
+def wallhaven_filters() -> dict:
+    """The filters every Wallhaven search uses; the add-a-search check counts with the same ones."""
+    return {
+        "categories": "110",      # general + anime (no people: avoids celebrity photos)
+        "purity": "100",          # SFW only
+        "atleast": f"{MIN_WIDTH}x{MIN_HEIGHT}",
+        "ratios": "landscape",
+    }
+
+
+def count_wallhaven(query: str) -> int:
+    """How many wallpapers Wallhaven has for a search with WallSwap's filters (before the favourites cutoff).
+    Raises on any network, HTTP or format problem."""
+    resp = safe_get(WALLHAVEN_SEARCH_URL, params={"q": query, **wallhaven_filters()}, max_bytes=MAX_API_BYTES)
+    resp.raise_for_status()
+    total = resp.json()["meta"]["total"]
+    if isinstance(total, bool) or not isinstance(total, int) or total < 0:
+        raise ValueError(f"Wallhaven sent an odd total: {total!r}")
+    return total
+
+
 def fetch_from_wallhaven(queries: list[str], sorting: str | None = None,
                          source: str = "wallhaven") -> Wallpaper | None:
     """Fetch a random 1440p+ wallpaper from Wallhaven for one of the searches."""
@@ -927,10 +951,7 @@ def fetch_from_wallhaven(queries: list[str], sorting: str | None = None,
 
     params = {
         "q": query,
-        "categories": "110",      # general + anime (no people: avoids celebrity photos)
-        "purity": "100",          # SFW only
-        "atleast": f"{MIN_WIDTH}x{MIN_HEIGHT}",
-        "ratios": "landscape",
+        **wallhaven_filters(),
         "sorting": sorting,
         "order": "desc",
         "page": 1,
@@ -940,8 +961,7 @@ def fetch_from_wallhaven(queries: list[str], sorting: str | None = None,
 
     try:
         log.info(f"Trying Wallhaven: query='{query}', sorting={sorting}")
-        resp = safe_get("https://wallhaven.cc/api/v1/search", params=params,
-                        max_bytes=MAX_API_BYTES)
+        resp = safe_get(WALLHAVEN_SEARCH_URL, params=params, max_bytes=MAX_API_BYTES)
         if resp.status_code != 200:
             log.warning(f"Wallhaven returned {resp.status_code}")
             return None
@@ -1529,6 +1549,7 @@ class WallSwapApp:
             patch=settings_patch,
             ask_folder=self.ask_folder,
             save=self._save_from_window,
+            count_search=self.count_search,
             startup_on=startup_enabled(),
             icon_path=ICON_PATH,
             on_closed=closed,
@@ -1536,6 +1557,19 @@ class WallSwapApp:
             version=APP_VERSION,
         )
         self.settings_window = self.settings_ui.SettingsWindow(self.root, deps)
+
+    def count_search(self, query: str, done):
+        """Count Wallhaven's wallpapers for a search on a worker thread, then call done(count) on the Tk thread
+        (count is None if the check failed)."""
+        def work():
+            try:
+                count = count_wallhaven(query)
+            except Exception as e:  # offline, timeout, HTTP error or an odd reply: the window just says so
+                log.warning(f"Couldn't count Wallhaven results for {query!r}: {e}")
+                count = None
+            self.post_to_ui(lambda: done(count))
+
+        threading.Thread(target=work, daemon=True).start()
 
     def _save_from_window(self, patch: dict, start_with_windows: bool | None) -> str | None:
         """Tk thread: write what the window changed, then the Start with Windows choice. An error message, or None."""

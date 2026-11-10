@@ -37,6 +37,19 @@ class WindowDeps:
     on_closed: Callable[[], None]
     game_name_max: int
     version: str = ""                                 # shown in the title bar
+    # (search, done): counts Wallhaven's wallpapers off the Tk thread, then calls done(count or None) on it
+    count_search: Callable[[str, Callable[[int | None], None]], None] | None = None
+
+
+def search_check_message(count: int | None, is_game: bool) -> str:
+    """What a search list says once Wallhaven has been asked about a newly added search (count None: no answer).
+    Topic searches also need 30 favourites, so their count is only an upper bound; game searches don't."""
+    if count is None:
+        return "Added. Couldn't check Wallhaven right now."
+    if count == 0:
+        return "Added, but Wallhaven has no 1440p+ wallpapers for this. Try a different spelling or a broader term."
+    noun = "wallpaper" if count == 1 else "wallpapers"
+    return f"Added. {count:,} {noun} on Wallhaven" if is_game else f"Added. About {count:,} {noun} on Wallhaven"
 
 
 def _interval_label(minutes: int) -> str:
@@ -46,10 +59,15 @@ def _interval_label(minutes: int) -> str:
 class TagList(ctk.CTkFrame):
     """Editable list of searches: click a chip to remove it, type and press Add or Enter to add one."""
 
-    def __init__(self, master, searches: list[str], clean, on_change=lambda: None):
+    def __init__(self, master, searches: list[str], clean, on_change=lambda: None, count_search=None,
+                 is_game: bool = False):
         super().__init__(master, fg_color="transparent")
         self._clean = clean
         self._on_change = on_change
+        self._count_search = count_search
+        self._is_game = is_game
+        self._check_id = 0  # bumped whenever the message line changes, so a late answer can't overwrite a newer one
+        self._message_chip = None  # the chip the message line is about (being checked, or its count shown)
         self._chips: list[tuple[str, ctk.CTkButton]] = []
         self._chip_frame = ctk.CTkFrame(self, fg_color="transparent")
         self._chip_frame.pack(fill="x")
@@ -63,7 +81,8 @@ class TagList(ctk.CTkFrame):
         self._entry.pack(side="left", fill="x", expand=True)
         self._entry.bind("<Return>", lambda _e: self._add())
         ctk.CTkButton(row, text="Add", width=60, command=self._add).pack(side="left", padx=(6, 0))
-        self._message = ctk.CTkLabel(self, text="", text_color=ERROR_COLOR, anchor="w")
+        self._message = ctk.CTkLabel(self, text="", text_color=ERROR_COLOR, anchor="w", justify="left",
+                                     wraplength=460)
         self._message.pack(fill="x")
 
     def values(self) -> list[str]:
@@ -84,6 +103,8 @@ class TagList(ctk.CTkFrame):
         self._chips = [(s, c) for s, c in self._chips if c is not chip]
         chip.destroy()
         self._layout()
+        if chip is self._message_chip:
+            self._say("")  # its "Checking…" or count goes with it; another tag's message stays
         self._on_change()
 
     def _add(self):
@@ -97,13 +118,37 @@ class TagList(ctk.CTkFrame):
                 reason = "Too long"
             else:
                 reason = "Already there"
-            self._message.configure(text=reason)
+            self._say(reason, ERROR_COLOR)
+            self._message_chip = None
             return
-        self._message.configure(text="")
         self._entry.delete(0, "end")
         self._add_chip(cleaned)
         self._layout()
         self._on_change()
+        chip = self._chips[-1][1]
+        if self._count_search is None:
+            self._say("")
+            self._message_chip = None
+            return
+        check_id = self._say("Checking…")
+        self._message_chip = chip
+        self._count_search(cleaned, lambda count: self._checked(check_id, chip, count))
+
+    def _say(self, text: str, color=HINT_COLOR) -> int:
+        self._check_id += 1
+        self._message.configure(text=text, text_color=color)
+        return self._check_id
+
+    def _checked(self, check_id: int, chip, count: int | None):
+        """Tk thread: show Wallhaven's answer, unless the window, the tag or the message has moved on."""
+        try:
+            if not self.winfo_exists():
+                return
+        except tkinter.TclError:
+            return  # Tk itself is gone
+        if check_id != self._check_id or all(c is not chip for _s, c in self._chips):
+            return
+        self._say(search_check_message(count, self._is_game), ERROR_COLOR if count == 0 else HINT_COLOR)
 
 
 class FolderList(ctk.CTkFrame):
@@ -165,10 +210,11 @@ class FolderList(ctk.CTkFrame):
 class _TopicRow(ctk.CTkFrame):
     """One topic: tick box, search count and an arrow that opens its searches (built on first open)."""
 
-    def __init__(self, master, label: str, entry: dict, clean, on_change):
+    def __init__(self, master, label: str, entry: dict, clean, on_change, count_search=None):
         super().__init__(master, fg_color="transparent")
         self._searches = list(entry["searches"])
         self._clean = clean
+        self._count_search = count_search
         self._on_change = on_change
         self.tags: TagList | None = None
         self._open = False
@@ -192,7 +238,8 @@ class _TopicRow(ctk.CTkFrame):
     def toggle(self):
         if self.tags is None:
             # Built only now: all topics' chips at once (about 141 for an upgraded file) would slow the opening
-            self.tags = TagList(self, self._searches, self._clean, on_change=self._tags_changed)
+            self.tags = TagList(self, self._searches, self._clean, on_change=self._tags_changed,
+                                count_search=self._count_search)
         self._open = not self._open
         if self._open:
             self.tags.pack(fill="x", padx=(28, 0), pady=(2, 6))
@@ -247,7 +294,7 @@ class SettingsWindow(ctk.CTkToplevel):
         for topic, label in self.deps.topic_labels.items():
             if topic in self._snapshot["topics"]:
                 row = _TopicRow(body, label, self._snapshot["topics"][topic], self.deps.clean_search,
-                                self._refresh_shares)
+                                self._refresh_shares, count_search=self.deps.count_search)
                 row.pack(fill="x", pady=1)
                 self._topics[topic] = row
 
@@ -264,7 +311,7 @@ class SettingsWindow(ctk.CTkToplevel):
                      anchor="w").pack(fill="x")
         ctk.CTkLabel(body, text="Wallhaven searches for it", anchor="w").pack(fill="x", pady=(6, 0))
         self._game_tags = TagList(body, self._snapshot["game_queries"], self.deps.clean_search,
-                                  on_change=self._refresh_shares)
+                                  on_change=self._refresh_shares, count_search=self.deps.count_search, is_game=True)
         self._game_tags.pack(fill="x")
 
     def _build_folders(self, body):
