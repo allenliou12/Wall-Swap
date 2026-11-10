@@ -318,8 +318,7 @@ class SettingsWindow(ctk.CTkToplevel):
 
     def _build_exclude(self, body):
         self._heading(body, "Never show")
-        ctk.CTkLabel(body, text="Wallhaven wallpapers tagged with these words are left out, in every topic and "
-                                "your favourite games. One word each, like car.", text_color=HINT_COLOR, anchor="w",
+        ctk.CTkLabel(body, text="Words to keep out of Wallhaven results, like car.", text_color=HINT_COLOR, anchor="w",
                      justify="left", wraplength=560).pack(fill="x")
         self._exclude = TagList(body, self._snapshot["exclude_words"], self.deps.clean_exclude or (lambda t, e: None),
                                 placeholder="Add a word", problem=self.deps.exclude_problem)
@@ -379,8 +378,7 @@ class SettingsWindow(ctk.CTkToplevel):
         # A hand-set value that isn't one of the choices behaves as the first one (match the screen) and is kept
         self._resolution.set(self.deps.resolution_labels.get(stored) or next(iter(self._resolution_by_label), ""))
         self._resolution.pack(anchor="w")
-        ctk.CTkLabel(body, text="Smaller images are skipped, in your own folders too. Match my screen never asks "
-                                "for more than 1440p.", text_color=HINT_COLOR, anchor="w").pack(fill="x")
+        ctk.CTkLabel(body, text="Smaller images are skipped.", text_color=HINT_COLOR, anchor="w").pack(fill="x")
 
     def _build_fit(self, body):
         self._heading(body, "How the picture fits the screen")
@@ -389,20 +387,20 @@ class SettingsWindow(ctk.CTkToplevel):
         # A hand-set value that isn't one of the choices behaves as the first one (leave Windows alone) and is kept
         self._fit.set(self.deps.fit_labels.get(self._snapshot["wallpaper_fit"]) or next(iter(self._fit_by_label), ""))
         self._fit.pack(anchor="w")
-        ctk.CTkLabel(body, text="Fill crops the edges, Fit shows the whole picture, Span stretches one picture "
-                                "across all screens.", text_color=HINT_COLOR, anchor="w").pack(fill="x")
+        ctk.CTkLabel(body, text="Span puts one picture across all your screens.", text_color=HINT_COLOR,
+                     anchor="w").pack(fill="x")
 
     def _build_updates(self, body):
         self._heading(body, "Internet")
-        self._updates = ctk.CTkSwitch(body, text="Tell me when a new version is out (checks GitHub once a day)")
+        self._updates = ctk.CTkSwitch(body, text="Tell me when a new version is out")
         if self._snapshot["check_for_updates"]:
             self._updates.select()
         self._updates.pack(anchor="w")
-        self._metered = ctk.CTkSwitch(body, text="Download on metered connections (phone hotspot, capped plan)")
+        self._metered = ctk.CTkSwitch(body, text="Download on metered connections")
         if self._snapshot["metered_downloads"]:
             self._metered.select()
         self._metered.pack(anchor="w", pady=(6, 0))
-        ctk.CTkLabel(body, text="Off: on a metered connection only your own folders are used.",
+        ctk.CTkLabel(body, text="Off: on a hotspot or capped plan, only your own folders are used.",
                      text_color=HINT_COLOR, anchor="w").pack(fill="x")
 
     def _build_startup(self, body):
