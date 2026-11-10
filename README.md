@@ -73,6 +73,8 @@ Save applies from the next wallpaper change. Cancel throws away what you changed
 
 Double-click the icon to skip to the next wallpaper. Right-click for:
 
+<img src="docs/tray-menu.png" alt="The WallSwap tray menu" width="230">
+
 - the WallSwap version, at the top (also in the settings window and in Settings → Apps), and under it an Update available line when a newer version is out; clicking it opens the Releases page
 - Next Wallpaper
 - Previous Wallpaper: goes back one, through the last 20 shown since WallSwap started
