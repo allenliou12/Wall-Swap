@@ -12,7 +12,7 @@ import wallpaper_changer as wc
 pytestmark = pytest.mark.skipif(sys.platform != "win32", reason="Windows shortcuts require Windows")
 
 # Read back through Shell.Application (shell32, Unicode), independent of the writer; WScript.Shell is ANSI-only.
-# The path travels in the environment, like the writer's.
+# The path travels in the environment, never in the script text.
 READ_PS = r"""
 $ErrorActionPreference = 'Stop'
 [Console]::OutputEncoding = [Text.Encoding]::UTF8
@@ -26,8 +26,7 @@ $iconIndex = $link.GetIconLocation([ref]$iconPath)
 
 
 def _read_back(lnk: Path) -> dict:
-    powershell = str(wc.windows_directory() / "System32/WindowsPowerShell/v1.0/powershell.exe")
-    out = subprocess.run([powershell, "-NoProfile", "-NonInteractive", "-Command", READ_PS],
+    out = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", READ_PS],
                          env={**os.environ, "WS_LNK": str(lnk)}, capture_output=True, check=True, timeout=30)
     return json.loads(out.stdout.decode("utf-8-sig"))
 
@@ -61,7 +60,7 @@ def test_real_frozen_shortcut_has_no_arguments(tmp_path):
     spec = wc.startup_shortcut_spec(exe, app / "unused.py", app / "unused.ico", pythonw_exists=True, frozen=True)
     lnk = app / wc.STARTUP_SHORTCUT_NAME
 
-    wc.write_shortcut(lnk, spec)  # an empty WS_ARGS must still produce a shortcut
+    wc.write_shortcut(lnk, spec)  # empty arguments must still produce a shortcut
 
     read = _read_back(lnk)
     assert Path(read["target"]) == exe
@@ -92,3 +91,41 @@ def test_real_take_over_of_a_source_shortcut(tmp_path, monkeypatch):
         (exe, "", exe.parent, f"{exe},0")
     assert wc.take_over_startup_shortcut(frozen=True) is False  # already this exe: nothing to do
     assert sorted(p.name for p in lnk.parent.iterdir()) == [wc.STARTUP_SHORTCUT_NAME]
+
+
+def test_a_shortcut_that_cannot_be_saved_raises_oserror(tmp_path):
+    spec = wc.ShortcutSpec(str(tmp_path / "pythonw.exe"), "", str(tmp_path), f"{tmp_path / 'i.ico'},0")
+    with pytest.raises(OSError):
+        wc.write_shortcut(tmp_path / "no such folder" / "x.lnk", spec)
+
+
+def test_reading_a_missing_shortcut_raises_oserror(tmp_path):
+    with pytest.raises(OSError):
+        wc.read_shortcut_target(tmp_path / "missing.lnk")
+
+
+def test_shortcuts_can_be_written_from_several_threads(tmp_path):
+    import threading
+    errors = []
+
+    def work(i):
+        try:
+            lnk = tmp_path / f"{i}.lnk"
+            wc.write_shortcut(lnk, wc.ShortcutSpec(str(tmp_path / f"t{i}.exe"), "", str(tmp_path), f"{tmp_path / 'i.ico'},0"))
+            assert wc.read_shortcut_target(lnk) == str(tmp_path / f"t{i}.exe")
+        except Exception as e:
+            errors.append(e)
+
+    threads = [threading.Thread(target=work, args=(i,)) for i in range(6)]
+    [t.start() for t in threads]
+    [t.join() for t in threads]
+    assert errors == []
+
+
+def test_a_shortcut_call_that_never_returns_stops_being_waited_for(tmp_path, monkeypatch):
+    import threading
+    stuck = threading.Event()
+    monkeypatch.setattr(wc, "SHORTCUT_TIMEOUT", 0.2)
+    with pytest.raises(OSError, match="longer than"):
+        wc._with_shell_link(lambda link, file: stuck.wait(5))
+    stuck.set()

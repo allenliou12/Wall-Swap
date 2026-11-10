@@ -14,7 +14,7 @@ Two files. `wallpaper_changer.py` holds everything but the window, split by `# �
 | Settings | `app` | `_merge_settings`, migration, `clean_search`, excluded words (`wallhaven_q`), `settings_patch`/`apply_patch`, `Settings` (settings.json, `.bak`, re-entrant lock), `Wallpaper` |
 | History + cleanup | `sources` | seen ids, blocked images (`blocked.txt`), keep-newest-50 cleanup |
 | Windows API | `windows` | desktop wallpaper, lock screen (WinRT), fullscreen check, screen size (`largest_screen`, `min_size`) |
-| Startup | `windows` | Start with Windows: `Startup\WallSwap.lnk` via PowerShell + IShellLinkW |
+| Startup | `windows` | Start with Windows: `Startup\WallSwap.lnk` via IShellLinkW, in-process (ctypes) |
 | Image validation | `sources` | `fits_screen` |
 | Safe downloads | `sources` | `safe_get`: host allow-list, size and time caps, checked redirects |
 | Update check | `app` | `latest_release`, `newer_version`: reads the newest GitHub release's version |
@@ -71,7 +71,7 @@ the portable zip and the installer.
 ## One wallpaper change, end to end
 
 1. Timer or menu → `_change_wallpaper` takes `change_lock` (or drops the request).
-2. `_do_change_wallpaper`: skip if a fullscreen app is in front; `settings.reload()` picks up hand edits.
+2. `_do_change_wallpaper`: skip if a fullscreen app is in front (and `pause_in_fullscreen` is on); `settings.reload()` picks up hand edits.
 3. `get_new_wallpaper`: one `snapshot()`; weighted pick from `source_weights` (off, empty and 0% sources dropped),
    then fall back to general Wallhaven, then local, but only to sources that have a share.
 4. Online sources run through `download_wallpaper`: fetch → re-save as JPEG → delete the temp file → cleanup.

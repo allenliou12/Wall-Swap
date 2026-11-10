@@ -7,7 +7,7 @@ Small Windows tray app that changes my wallpaper (and lock screen) every 30 minu
 - Public-domain paintings from [the Met's open access API](https://metmuseum.github.io/)
 - Your own folders of screenshots or wallpapers
 
-Everything is landscape and at least as big as your screen (your biggest one, if you have several). Matching the screen never asks for more than 2560x1440, so a 4K screen still gets 1440p images; pick 1080p, 1440p or 4K yourself if you'd rather. It doesn't repeat images, and it won't change the wallpaper while a fullscreen game is running (it catches up within a minute of you leaving the game, and does the same if a download fails because you're offline). No API keys needed.
+Everything is landscape and at least as big as your screen (your biggest one, if you have several). Matching the screen never asks for more than 2560x1440, so a 4K screen still gets 1440p images; pick 1080p, 1440p or 4K yourself if you'd rather. It doesn't repeat images, and it won't change the wallpaper while a fullscreen game is running, unless you switch that off (it catches up within a minute of you leaving the game, and does the same if a download fails because you're offline). No API keys needed.
 
 ## Installing it
 
@@ -59,13 +59,13 @@ Right-click the tray icon and pick Settings… to open it again.
 - **Never show:** words to keep out of Wallhaven results, in every topic and your favourite games. One word each (like `car`), up to 10. Met paintings and your own folders aren't affected.
 - **Favourite games:** games you want to see more of. Type a game's name and press Add; add as many as you like (a sequel is just another one). Each is searched on Wallhaven, all are equally likely, and together they have their own slider in the source mix. Leave the list empty if you don't want any. There aren't many game wallpapers, so once they've all been shown, that share uses the game folders instead.
 - **My folders:** add or remove your own image folders. Only images directly in a folder are used, not subfolders, and WallSwap never changes anything in them.
-- **Source mix:** one slider each for Wallhaven, Met paintings, your folders and your favourite games. The percentage next to each is its real share of changes. A source with nothing to use (no folders, no game searches, no ticked topics) or turned off drops out and says why.
-- **Change every:** 15 min, 30 min, 1 hour or 2 hours.
+- **Source mix:** one slider each for Wallhaven, Met paintings, your folders and your favourite games. The percentage next to each is its real share of changes. A source with nothing to use (no folders, no game searches, no ticked topics) or turned off drops out and says why. Reset puts the four sliders back to the defaults.
+- **Change every:** 15 min, 30 min, 1 hour or 2 hours. With "Wait while a fullscreen game is in front" on (the default) a change that comes due during a game waits until you leave it; turn it off to keep changing regardless.
 - **Smallest image to use:** Match my screen, 1080p, 1440p or 4K. Smaller images are skipped, in your own folders too.
 - **How the picture fits the screen:** As Windows has it (the default: WallSwap doesn't touch it), Fill, Fit or Span. Span stretches one picture across all your screens.
 - **Download on metered connections:** off by default. On a phone hotspot or a capped or roaming plan (anything Windows marks as metered) WallSwap downloads nothing and uses only your own folders; with no folders the wallpaper just stays until you're back on a normal connection. The update check waits too.
 - **Updates:** once a day (and at start) WallSwap asks GitHub whether a newer version is out and tells you once per version. It only reads the public release page, sends nothing about you, and never downloads or installs anything. Turn the switch off to stop it; Check for Updates in the tray menu still works.
-- **Start with Windows:** puts a WallSwap shortcut in your Startup folder (or takes it out).
+- **Start with Windows:** puts a WallSwap shortcut in your Startup folder (or takes it out). Some antivirus programs (Kaspersky, for one) treat an app adding itself to Startup as malware and remove WallSwap when you turn this on; with one of those, use the installer's "Start WallSwap when I sign in" box instead.
 
 Save applies from the next wallpaper change. Cancel throws away what you changed.
 
@@ -76,6 +76,7 @@ Double-click the icon to skip to the next wallpaper. Right-click for:
 <img src="docs/tray-menu.png" alt="The WallSwap tray menu" width="230">
 
 - the WallSwap version, at the top (also in the settings window and in Settings → Apps), and under it an Update available line when a newer version is out; clicking it opens the Releases page
+- when the next change is due ("Next change in 12 min"), or why it is waiting: paused, a fullscreen app in front, or trying again after a failed download
 - Next Wallpaper
 - Previous Wallpaper: goes back one, through the last 20 shown since WallSwap started
 - Favourite: copies the current one to `Pictures\WallSwap\Favourites`
@@ -100,6 +101,7 @@ The window saves to `Pictures\WallSwap\settings.json`. You can still edit it by 
   "min_resolution": "auto",
   "wallpaper_fit": "auto",
   "metered_downloads": false,
+  "pause_in_fullscreen": true,
   "sources": {"wallhaven": true, "game": true, "museum": true, "local": true},
   "chances": {"wallhaven": 0.45, "museum": 0.15, "local": 0.2, "game": 0.2},
   "topics": {
@@ -127,7 +129,7 @@ If you're upgrading from the version before the settings window, your old file i
 WallSwap is meant to stay out of the way of games and calls:
 
 - A change downloads one image, usually 2-5 MB. At the default 30 minutes that is roughly 5-10 MB an hour.
-- Nothing is downloaded while a fullscreen app is in front.
+- Nothing is downloaded while a fullscreen app is in front (unless you turn that off in Settings).
 - Changes it makes by itself download at no more than about 1 MB per second, so they can't fill your connection. Next Wallpaper, which you click yourself, runs at full speed.
 - Wallhaven images over 10 MB are skipped.
 - On a metered connection it downloads nothing unless you allow it (see Settings).

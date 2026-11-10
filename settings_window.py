@@ -43,6 +43,7 @@ class WindowDeps:
     exclude_problem: Callable[[str, list[str]], str | None] | None = None  # why a word can't be added
     # (search, done): counts Wallhaven's wallpapers off the Tk thread, then calls done(count or None) on it
     count_search: Callable[[str, Callable[[int | None], None]], None] | None = None
+    default_chances: dict[str, float] = dataclasses.field(default_factory=dict)  # what Reset puts the mix back to
 
 
 def search_check_message(count: int | None, is_game: bool) -> str:
@@ -340,7 +341,12 @@ class SettingsWindow(ctk.CTkToplevel):
         self._folders.pack(fill="x")
 
     def _build_mix(self, body):
-        self._heading(body, "Source mix")
+        head = ctk.CTkFrame(body, fg_color="transparent")  # the heading with Reset beside it
+        head.pack(fill="x", pady=(14, 4))
+        ctk.CTkLabel(head, text="Source mix", font=ctk.CTkFont(size=16, weight="bold"), anchor="w").pack(side="left")
+        if self.deps.default_chances:
+            ctk.CTkButton(head, text="Reset", width=60, height=24, fg_color="transparent", border_width=1,
+                          text_color=("gray10", "gray90"), command=self._reset_mix).pack(side="left", padx=(12, 0))
         self._sliders: dict[str, ctk.CTkSlider] = {}
         self._moved: set[str] = set()
         self._share_labels: dict[str, ctk.CTkLabel] = {}
@@ -353,6 +359,8 @@ class SettingsWindow(ctk.CTkToplevel):
             slider = ctk.CTkSlider(grid, from_=0, to=100, number_of_steps=100,
                                    command=lambda _v, s=source: self._slider_moved(s))
             slider.set(min(100, round(self._snapshot["chances"][source] * 100)))
+            # The wheel scrolls the window; over a slider it would otherwise also move the slider
+            slider._canvas.unbind("<MouseWheel>")
             slider.grid(row=i, column=1, sticky="ew", pady=4)
             share = ctk.CTkLabel(grid, text="", anchor="w", width=220)
             share.grid(row=i, column=2, sticky="w", padx=(10, 0), pady=4)
@@ -369,6 +377,10 @@ class SettingsWindow(ctk.CTkToplevel):
         # A hand-set value that isn't one of the choices shows none selected and is kept
         self._interval.set(_interval_label(stored) if stored in self.deps.interval_choices else "")
         self._interval.pack(anchor="w")
+        self._pause = ctk.CTkSwitch(body, text="Wait while a fullscreen game is in front")
+        if self._snapshot["pause_in_fullscreen"]:
+            self._pause.select()
+        self._pause.pack(anchor="w", pady=(8, 0))
 
     def _build_resolution(self, body):
         self._heading(body, "Smallest image to use")
@@ -450,6 +462,7 @@ class SettingsWindow(ctk.CTkToplevel):
         return {
             "wallpaper_fit": fit,
             "metered_downloads": self._metered.get() == 1,
+            "pause_in_fullscreen": self._pause.get() == 1,
             "interval_minutes": self._interval_by_label.get(self._interval.get(), snap["interval_minutes"]),
             "min_resolution": resolution,
             "exclude_words": self._exclude.values(),
@@ -463,6 +476,13 @@ class SettingsWindow(ctk.CTkToplevel):
 
     def _slider_moved(self, source: str):
         self._moved.add(source)  # an untouched slider keeps the stored value, even one it can't show (like 1.5)
+        self._refresh_shares()
+
+    def _reset_mix(self):
+        for source, chance in self.deps.default_chances.items():
+            if source in self._sliders:
+                self._sliders[source].set(min(100, round(chance * 100)))
+                self._moved.add(source)
         self._refresh_shares()
 
     def _refresh_shares(self):

@@ -62,7 +62,7 @@ except ImportError:
     sys.exit(1)
 
 # ─── Configuration ────────────────────────────────────────────
-APP_VERSION = "1.1.0"  # keep equal to pyproject.toml's version (a test checks); shown in the tray, window and log
+APP_VERSION = "1.2.0"  # keep equal to pyproject.toml's version (a test checks); shown in the tray, window and log
 # A PyInstaller build sets sys.frozen; its bundled files (the icon) unpack to sys._MEIPASS, not next to this file
 FROZEN = getattr(sys, "frozen", False)
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -118,9 +118,6 @@ GENTLE_BYTES_PER_SECOND = 1_000_000
 
 # Start with Windows: the one file WallSwap writes outside its own folder (INV-16)
 STARTUP_SHORTCUT_NAME = "WallSwap.lnk"
-# Hide the PowerShell console that writes the shortcut; the flag exists only on Windows, 0 elsewhere
-CREATE_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
-MAX_WINDOWS_PATH = 260  # MAX_PATH: the Windows folder always fits; a longer answer is treated as no answer
 
 # User settings live in SETTINGS_FILE (created from these defaults on first run) and can be
 # changed from the tray menu, the Settings window or by editing the file.
@@ -136,11 +133,13 @@ MAX_WINDOWS_PATH = 260  # MAX_PATH: the Windows folder always fits; a longer ans
 #   min_resolution: a key of RESOLUTION_LABELS; anything else counts as "auto"
 #   wallpaper_fit: a key of FIT_LABELS; anything else counts as "auto"
 #   metered_downloads: False = on a metered connection nothing is downloaded, only your own folders are used
+#   pause_in_fullscreen: True = no change while a fullscreen app (a game) is in front (INV-14)
 DEFAULT_SETTINGS = {
     "interval_minutes": 30,
     "min_resolution": "auto",
     "wallpaper_fit": "auto",
     "metered_downloads": False,
+    "pause_in_fullscreen": True,
     "sources": {"wallhaven": True, "game": True, "museum": True, "local": True},
     "chances": {"wallhaven": 0.45, "museum": 0.15, "local": 0.2, "game": 0.2},
     "topics": {
@@ -406,7 +405,7 @@ def settings_patch(before: dict, after: dict) -> dict:
     Folders are listed as adds and removes, not whole lists, for the same reason.
     """
     paths = [("interval_minutes",), ("min_resolution",), ("wallpaper_fit",), ("metered_downloads",),
-             ("exclude_words",), ("check_for_updates",), ("game_name",),
+             ("pause_in_fullscreen",), ("exclude_words",), ("check_for_updates",), ("game_name",),
              ("game_queries",)]
     paths += [("chances", s) for s in before["chances"]]
     paths += [("topics", t, f) for t in before["topics"] for f in ("enabled", "searches")]
@@ -963,72 +962,95 @@ def is_fullscreen_app_running() -> bool:
 
 
 # ─── Startup ──
-# Writes the .lnk through the Unicode IShellLinkW interface (WScript.Shell turns characters outside the
-# ANSI code page into "?"), then prints the target read back from the saved file as UTF-8.
-# Paths reach PowerShell only through the WS_* environment variables, never pasted into the script text.
-SHORTCUT_TYPE_PS = r"""
-$ErrorActionPreference = 'Stop'
-[Console]::OutputEncoding = [Text.Encoding]::UTF8
-Add-Type -TypeDefinition @'
-using System;
-using System.Runtime.InteropServices;
-using System.Runtime.InteropServices.ComTypes;
-using System.Text;
+# The .lnk is written and read in this process through the shell's own Unicode IShellLinkW interface. Nothing
+# else is started for it: an exe that launches a hidden PowerShell to put itself in the Startup folder is what
+# antivirus behaviour monitors take for malware.
+CLSID_SHELL_LINK = "00021401-0000-0000-C000-000000000046"
+IID_SHELL_LINK_W = "000214F9-0000-0000-C000-000000000046"
+IID_PERSIST_FILE = "0000010B-0000-0000-C000-000000000046"
+# Positions in each interface's table of methods, counted from IUnknown (QueryInterface 0, AddRef 1, Release 2)
+COM_QUERY_INTERFACE, COM_RELEASE = 0, 2
+LINK_GET_PATH, LINK_SET_WORKING_DIR, LINK_SET_ARGUMENTS, LINK_SET_ICON, LINK_SET_PATH = 3, 9, 11, 17, 20
+PERSIST_LOAD, PERSIST_SAVE = 5, 6
+SLGP_RAWPATH = 4            # the target as stored, not resolved
+MAX_SHORTCUT_PATH = 32768   # the longest path Windows has
+SHORTCUT_TIMEOUT = 15       # seconds a shortcut call may take before the caller stops waiting
 
-[ComImport, InterfaceType(ComInterfaceType.InterfaceIsIUnknown), Guid("000214F9-0000-0000-C000-000000000046")]
-interface IShellLinkW {
-    void GetPath([Out, MarshalAs(UnmanagedType.LPWStr)] StringBuilder file, int size, IntPtr data, uint flags);
-    void GetIDList(out IntPtr idList);
-    void SetIDList(IntPtr idList);
-    void GetDescription([Out, MarshalAs(UnmanagedType.LPWStr)] StringBuilder name, int size);
-    void SetDescription([MarshalAs(UnmanagedType.LPWStr)] string name);
-    void GetWorkingDirectory([Out, MarshalAs(UnmanagedType.LPWStr)] StringBuilder dir, int size);
-    void SetWorkingDirectory([MarshalAs(UnmanagedType.LPWStr)] string dir);
-    void GetArguments([Out, MarshalAs(UnmanagedType.LPWStr)] StringBuilder args, int size);
-    void SetArguments([MarshalAs(UnmanagedType.LPWStr)] string args);
-    void GetHotkey(out short hotkey);
-    void SetHotkey(short hotkey);
-    void GetShowCmd(out int showCmd);
-    void SetShowCmd(int showCmd);
-    void GetIconLocation([Out, MarshalAs(UnmanagedType.LPWStr)] StringBuilder path, int size, out int index);
-    void SetIconLocation([MarshalAs(UnmanagedType.LPWStr)] string path, int index);
-    void SetRelativePath([MarshalAs(UnmanagedType.LPWStr)] string path, uint reserved);
-    void Resolve(IntPtr hwnd, uint flags);
-    void SetPath([MarshalAs(UnmanagedType.LPWStr)] string file);
-}
 
-[ComImport, Guid("00021401-0000-0000-C000-000000000046")]
-class ShellLink {}
+class _Guid(ctypes.Structure):
+    _fields_ = [("d1", ctypes.c_uint32), ("d2", ctypes.c_uint16), ("d3", ctypes.c_uint16),
+                ("d4", ctypes.c_ubyte * 8)]
 
-public static class WallSwapShortcut {
-    public static void Save(string lnk, string target, string args, string dir, string icon) {
-        IShellLinkW link = (IShellLinkW)new ShellLink();
-        link.SetPath(target);
-        link.SetArguments(args);
-        link.SetWorkingDirectory(dir);
-        int comma = icon.LastIndexOf(',');
-        link.SetIconLocation(icon.Substring(0, comma), int.Parse(icon.Substring(comma + 1)));
-        ((IPersistFile)link).Save(lnk, true);
-    }
+    @classmethod
+    def of(cls, text: str) -> "_Guid":
+        return cls.from_buffer_copy(uuid.UUID(text).bytes_le)
 
-    public static string Target(string lnk) {
-        IShellLinkW link = (IShellLinkW)new ShellLink();
-        ((IPersistFile)link).Load(lnk, 0);
-        StringBuilder target = new StringBuilder(32768);
-        link.GetPath(target, target.Capacity, IntPtr.Zero, 4);  // 4 = SLGP_RAWPATH: as stored, not resolved
-        return target.ToString();
-    }
-}
-'@
-"""
-SHORTCUT_PS = SHORTCUT_TYPE_PS + r"""
-[WallSwapShortcut]::Save($env:WS_LNK, $env:WS_TARGET, $env:WS_ARGS, $env:WS_WD, $env:WS_ICON)
-[WallSwapShortcut]::Target($env:WS_LNK)
-"""
-# Reads a shortcut's stored target the same Unicode-safe way, without changing the file
-SHORTCUT_READ_PS = SHORTCUT_TYPE_PS + r"""
-[WallSwapShortcut]::Target($env:WS_LNK)
-"""
+
+def _com(pointer: ctypes.c_void_p, slot: int, argtypes: tuple, *args) -> None:
+    """Call method number slot of a COM object; raises OSError when it reports failure."""
+    table = ctypes.cast(pointer, ctypes.POINTER(ctypes.POINTER(ctypes.c_void_p))).contents
+    method = ctypes.WINFUNCTYPE(ctypes.c_long, ctypes.c_void_p, *argtypes)(table[slot])
+    result = method(pointer, *args)
+    if result < 0:
+        # Windows' own words ("Access is denied."), which the settings window shows the user
+        raise OSError(f"{ctypes.FormatError(result).strip()} (shortcut call {slot}, 0x{result & 0xFFFFFFFF:08X})")
+
+
+def _with_shell_link(work):
+    """Run work(link, file) with a new shell link object (IShellLinkW, and its IPersistFile) and return its
+    result. On a thread of its own, because COM has to be set up per thread and the callers' threads (Tk, the
+    timer, workers) are not ours to set up. Raises OSError on failure."""
+    outcome = {}
+
+    def run():
+        try:
+            ole32 = ctypes.WinDLL("ole32")
+            ole32.CoInitializeEx.argtypes = (ctypes.c_void_p, ctypes.c_uint32)
+            ole32.CoInitializeEx.restype = ctypes.c_long
+            ole32.CoCreateInstance.argtypes = (ctypes.POINTER(_Guid), ctypes.c_void_p, ctypes.c_uint32,
+                                               ctypes.POINTER(_Guid), ctypes.POINTER(ctypes.c_void_p))
+            ole32.CoCreateInstance.restype = ctypes.c_long
+            ole32.CoUninitialize.argtypes = ()
+            ole32.CoUninitialize.restype = None
+            if ole32.CoInitializeEx(None, 2) < 0:  # 2 = COINIT_APARTMENTTHREADED
+                raise OSError("Windows couldn't start COM for the shortcut")
+            try:
+                link, file = ctypes.c_void_p(), ctypes.c_void_p()
+                result = ole32.CoCreateInstance(ctypes.byref(_Guid.of(CLSID_SHELL_LINK)), None, 1,  # 1 = in-process
+                                                ctypes.byref(_Guid.of(IID_SHELL_LINK_W)), ctypes.byref(link))
+                if result < 0 or not link:
+                    raise OSError(f"Windows couldn't make a shortcut object (0x{result & 0xFFFFFFFF:08X})")
+                try:
+                    _com(link, COM_QUERY_INTERFACE, (ctypes.POINTER(_Guid), ctypes.POINTER(ctypes.c_void_p)),
+                         ctypes.byref(_Guid.of(IID_PERSIST_FILE)), ctypes.byref(file))
+                    try:
+                        outcome["value"] = work(link, file)
+                    finally:
+                        _com(file, COM_RELEASE, ())
+                finally:
+                    _com(link, COM_RELEASE, ())
+            finally:
+                ole32.CoUninitialize()
+        except Exception as e:  # handed to the caller's thread below
+            outcome["error"] = e
+
+    thread = threading.Thread(target=run, daemon=True)
+    thread.start()
+    thread.join(SHORTCUT_TIMEOUT)  # a target on a network drive that doesn't answer can take a long time
+    if thread.is_alive():
+        raise OSError(f"Windows took longer than {SHORTCUT_TIMEOUT} seconds over the shortcut")
+    if "error" in outcome:
+        error = outcome["error"]
+        raise error if isinstance(error, OSError) else OSError(f"Shortcut failed: {error!r}")
+    return outcome.get("value")
+
+
+def _stored_target(link, file, path: Path) -> str:
+    _com(file, PERSIST_LOAD, (ctypes.c_wchar_p, ctypes.c_uint32), str(path), 0)
+    target = ctypes.create_unicode_buffer(MAX_SHORTCUT_PATH)
+    _com(link, LINK_GET_PATH, (ctypes.c_wchar_p, ctypes.c_int, ctypes.c_void_p, ctypes.c_uint32),
+         target, MAX_SHORTCUT_PATH, None, SLGP_RAWPATH)
+    return target.value
 
 
 @dataclasses.dataclass(frozen=True)
@@ -1066,66 +1088,30 @@ def startup_enabled() -> bool:
     return startup_shortcut_path().exists()
 
 
-def windows_directory() -> PureWindowsPath:
-    """The Windows folder as the OS reports it; %SystemRoot% is not trusted, any parent process can set it."""
-    buf = ctypes.create_unicode_buffer(MAX_WINDOWS_PATH)
-    try:
-        length = ctypes.windll.kernel32.GetSystemWindowsDirectoryW(buf, MAX_WINDOWS_PATH)
-    except AttributeError:  # ctypes.windll exists only on Windows; elsewhere use the default folder
-        length = 0
-    found = PureWindowsPath(buf.value)
-    if 0 < length < MAX_WINDOWS_PATH and found.is_absolute():
-        return found
-    return PureWindowsPath(r"C:\Windows")
-
-
-def _last_line(output: bytes | None) -> str:
-    """The last non-empty line of a process's output, short enough for a message."""
-    lines = [ln.strip() for ln in (output or b"").decode(errors="replace").splitlines() if ln.strip()]
-    return lines[-1][:200] if lines else ""
-
-
 def write_shortcut(path: Path, spec: ShortcutSpec):
     """Write a .lnk through the Unicode IShellLinkW interface; raises OSError on failure so the caller can tell the user (HZ-2)."""
-    # Absolute path from the OS, so a powershell.exe planted next to the script, in .venv or under a
-    # relative %SystemRoot% can never run
-    powershell = windows_directory() / "System32/WindowsPowerShell/v1.0/powershell.exe"
-    try:
-        done = subprocess.run(
-            [str(powershell), "-NoProfile", "-NonInteractive", "-Command", SHORTCUT_PS],
-            env={**os.environ, "WS_LNK": str(path), "WS_TARGET": spec.target, "WS_ARGS": spec.arguments,
-                 "WS_WD": spec.working_dir, "WS_ICON": spec.icon},
-            creationflags=CREATE_NO_WINDOW, capture_output=True, check=True, timeout=15,
-        )
-    except subprocess.TimeoutExpired:
-        raise OSError("PowerShell took longer than 15 seconds") from None
-    except subprocess.CalledProcessError as e:
-        # str(e) would repeat the whole script; PowerShell's own error is in stderr
-        reason = _last_line(e.stderr) or f"exit code {e.returncode}"
-        log.warning(f"Startup shortcut PowerShell failed: {(e.stderr or b'').decode(errors='replace')}")
-        raise OSError(f"PowerShell said: {reason}") from None
+    icon_path, _, icon_index = spec.icon.rpartition(",")
+
+    def save(link, file):
+        text = (ctypes.c_wchar_p,)
+        _com(link, LINK_SET_PATH, text, spec.target)
+        _com(link, LINK_SET_ARGUMENTS, text, spec.arguments)
+        _com(link, LINK_SET_WORKING_DIR, text, spec.working_dir)
+        _com(link, LINK_SET_ICON, (ctypes.c_wchar_p, ctypes.c_int), icon_path, int(icon_index))
+        _com(file, PERSIST_SAVE, (ctypes.c_wchar_p, ctypes.c_int), str(path), 1)
+
+    _with_shell_link(save)
     if not path.exists():
         raise OSError(f"Startup shortcut was not created: {path}")
     # A shortcut whose target came out mangled would silently never start WallSwap
-    saved_target = (done.stdout or b"").decode("utf-8-sig", errors="replace").strip()
+    saved_target = read_shortcut_target(path)
     if saved_target != spec.target:
         raise OSError(f"Startup shortcut points to {saved_target!r}, not {spec.target!r}: {path}")
 
 
 def read_shortcut_target(path: Path) -> str:
     """The target stored in a .lnk, read through IShellLinkW; raises OSError on failure."""
-    powershell = windows_directory() / "System32/WindowsPowerShell/v1.0/powershell.exe"
-    try:
-        done = subprocess.run(
-            [str(powershell), "-NoProfile", "-NonInteractive", "-Command", SHORTCUT_READ_PS],
-            env={**os.environ, "WS_LNK": str(path)},
-            creationflags=CREATE_NO_WINDOW, capture_output=True, check=True, timeout=15,
-        )
-    except subprocess.TimeoutExpired:
-        raise OSError("PowerShell took longer than 15 seconds") from None
-    except subprocess.CalledProcessError as e:
-        raise OSError(f"PowerShell said: {_last_line(e.stderr) or f'exit code {e.returncode}'}") from None
-    return (done.stdout or b"").decode("utf-8-sig", errors="replace").strip()
+    return _with_shell_link(lambda link, file: _stored_target(link, file, path))
 
 
 def should_repoint(existing_target: str, exe_path: Path | str) -> bool:
@@ -1156,7 +1142,7 @@ def take_over_startup_shortcut(frozen: bool = FROZEN, read=read_shortcut_target,
         existing = ""
     if not should_repoint(existing, exe):
         return False
-    # The read takes seconds; the user may have turned Start with Windows off meanwhile. Check again under the
+    # The user may have turned Start with Windows off meanwhile. Check again under the
     # same lock the switch uses, so the take-over never brings back a shortcut that was just removed (INV-16)
     with STARTUP_SHORTCUT_LOCK:
         if not path.exists():
@@ -1727,6 +1713,29 @@ def retry_plan(outcome: str, failures: int) -> tuple[int | None, int]:
     return None, 0
 
 
+def next_change_text(paused: bool, outcome: str | None, remaining_seconds: int) -> str:
+    """The tray menu's line about the next change. outcome is what the last attempt did (see retry_plan)."""
+    if paused:
+        return "Paused"
+    if outcome == "skipped":
+        return "Waiting for the fullscreen app to close"
+    minutes = max(1, -(-remaining_seconds // 60))  # rounded up, so it never says 0
+    hours, rest = divmod(minutes, 60)
+    wait = f"{minutes} min" if not hours else f"{hours} h {rest} min" if rest else f"{hours} h"
+    return f"Trying again in {wait}" if outcome == "failed" else f"Next change in {wait}"
+
+
+def menu_is_open() -> bool:
+    """Whether a popup menu (ours or any app's) is on screen. Rebuilding the tray menu destroys the one being
+    shown, so the once-a-minute refresh of its countdown waits for this to be False."""
+    try:
+        user32 = ctypes.windll.user32
+        hwnd = user32.FindWindowW("#32768", None)  # the window class of every Windows popup menu
+        return bool(hwnd and user32.IsWindowVisible(hwnd))
+    except Exception:
+        return False
+
+
 def _safe_filename(text: str) -> str:
     """Turn a title into something Windows accepts as a file name."""
     name = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "", text).strip(" .")
@@ -1750,6 +1759,8 @@ class WallSwapApp:
         self.manual_update_check = threading.Lock()
         self.retry_after: int | None = None  # seconds until a skipped or failed change is tried again
         self.failures = 0                    # failed changes in a row
+        self.last_outcome: str | None = None  # what the last change attempt did, for the tray menu's status line
+        self.status_shown = ""               # the status line as the tray menu was last built with
         self.change_lock = threading.Lock()  # one wallpaper change at a time
         self.folder_dialog_open = False
         self.root = None  # the hidden Tk root; every Tk call happens on its (the main) thread
@@ -1796,7 +1807,13 @@ class WallSwapApp:
         except Exception as e:
             log.warning(f"Notification failed: {e}")
 
+    def status_text(self) -> str:
+        """The tray menu's line under the version: when the next change is due, or why it is waiting."""
+        wait = (self.retry_after or settings.interval_seconds) - self.elapsed
+        return next_change_text(self.paused, self.last_outcome if self.retry_after else None, wait)
+
     def refresh_menu(self):
+        self.status_shown = self.status_text()
         if self.icon:
             self.icon.update_menu()
 
@@ -1833,13 +1850,15 @@ class WallSwapApp:
             log.exception("The wallpaper change failed unexpectedly")
             outcome = "failed"
         self.retry_after, self.failures = retry_plan(outcome, self.failures)
+        self.last_outcome = outcome
         self.elapsed = 0  # the wait for the retry, or the next interval, starts now
         if self.retry_after:
             log.info(f"Trying again in {self.retry_after} seconds")
         return outcome
 
     def _do_change_wallpaper(self) -> str:
-        if is_fullscreen_app_running():
+        # The setting is read from memory, not the file: this runs every minute while a game is in front
+        if settings.data["pause_in_fullscreen"] and is_fullscreen_app_running():
             log.info("Fullscreen app detected, skipping wallpaper change")
             return "skipped"
 
@@ -2120,6 +2139,7 @@ class WallSwapApp:
             ask_folder=self.ask_folder,
             save=self._save_from_window,
             count_search=self.count_search,
+            default_chances=DEFAULT_SETTINGS["chances"],
             startup_on=startup_enabled(),
             icon_path=ICON_PATH,
             on_closed=closed,
@@ -2152,7 +2172,7 @@ class WallSwapApp:
         if start_with_windows is not None:
             try:
                 set_start_with_windows(start_with_windows)
-            except (OSError, subprocess.SubprocessError) as e:
+            except OSError as e:
                 # HZ-2: absorbed so the window stays usable, but logged and shown in its banner
                 log.warning(f"Couldn't change Start with Windows: {e}")
                 return f"Settings saved, but Start with Windows couldn't be changed: {e}"
@@ -2325,11 +2345,19 @@ class WallSwapApp:
         if self.elapsed >= (self.retry_after or settings.interval_seconds):
             self.elapsed = 0
             self._change_wallpaper(gentle=True)
+        # The menu is built ahead of being opened, so its countdown is rebuilt when the minute shown changes
+        if self.status_text() != self.status_shown and not menu_is_open():
+            try:
+                self.refresh_menu()
+            except Exception:
+                # HZ-2: a rebuild that fails must not end the timer thread (and with it every later change)
+                log.exception("Couldn't refresh the tray menu")
 
     def build_menu(self) -> pystray.Menu:
         has_current = lambda item: self.current is not None  # noqa: E731
         return pystray.Menu(
             pystray.MenuItem(f"WallSwap {APP_VERSION}", None, enabled=False),
+            pystray.MenuItem(lambda item: self.status_text(), None, enabled=False),
             pystray.MenuItem(lambda item: f"⬆ Update available: {self.update_version}", self.open_releases,
                              visible=lambda item: self.update_version is not None),
             pystray.Menu.SEPARATOR,
@@ -2378,7 +2406,7 @@ class WallSwapApp:
         if not settings.persist_migration():
             log.warning("Couldn't save the upgraded settings.json; using the upgraded settings in memory for now")
 
-        # Off the main thread: reading the shortcut starts PowerShell, which would hold up the tray for a second
+        # Off the main thread, so reading the shortcut can never hold up the tray
         threading.Thread(target=self._take_over_startup_shortcut, daemon=True).start()
 
         # The Tk root comes before the tray, so the process is DPI-aware before pystray creates its windows

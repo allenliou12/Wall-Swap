@@ -1,9 +1,7 @@
 """Start with Windows: WallSwap writes and removes only Startup\\WallSwap.lnk (INV-16)."""
 import os
-import subprocess
 import sys
-import types
-from pathlib import Path, PureWindowsPath
+from pathlib import Path
 
 import pytest
 
@@ -55,83 +53,64 @@ def appdata(tmp_path, monkeypatch) -> Path:
     return startup
 
 
-def test_turning_on_passes_paths_only_in_env(appdata, monkeypatch):
-    calls = []
+class _FakeShell:
+    """Stands in for the shell link object: records the calls, and "saves" by creating the file."""
 
-    def fake_run(argv, **kwargs):
-        calls.append((argv, kwargs))
-        Path(kwargs["env"]["WS_LNK"]).write_bytes(b"lnk")
-        return subprocess.CompletedProcess(argv, 0, stdout=kwargs["env"]["WS_TARGET"].encode("utf-8"))
+    def __init__(self, monkeypatch, saves: bool = True, stored: str | None = None):
+        self.calls, self.saves, self.stored, self.target = [], saves, stored, ""
+        monkeypatch.setattr(wc, "_with_shell_link", lambda work: work("link", "file"))
+        monkeypatch.setattr(wc, "_com", self.com)
 
-    monkeypatch.setattr(wc.subprocess, "run", fake_run)
+    def com(self, pointer, slot, argtypes, *args):
+        self.calls.append((pointer, slot, args))
+        if slot == wc.LINK_SET_PATH:
+            self.target = args[0]
+        elif slot == wc.PERSIST_SAVE and self.saves:
+            Path(args[0]).write_bytes(b"lnk")
+        elif slot == wc.LINK_GET_PATH:
+            args[0].value = self.target if self.stored is None else self.stored
+
+
+def test_turning_on_writes_the_shortcut_in_this_process(appdata, monkeypatch):
+    shell = _FakeShell(monkeypatch)
+    started = []
+    monkeypatch.setattr(wc.subprocess, "run", lambda *a, **k: started.append(a))
+    monkeypatch.setattr(wc.subprocess, "Popen", lambda *a, **k: started.append(a))
     wc.set_start_with_windows(True)
 
     lnk = appdata / wc.STARTUP_SHORTCUT_NAME
     assert lnk.exists() and wc.startup_enabled()
-    (argv, kwargs), = calls
-    assert PureWindowsPath(argv[0]).is_absolute() and PureWindowsPath(argv[0]).name.lower() == "powershell.exe"
-    assert argv[-1] == wc.SHORTCUT_PS
-    env = kwargs["env"]
+    assert started == []  # no PowerShell or any other program: antivirus takes that for malware
     script = str(wc.SCRIPT_DIR / "wallpaper_changer.py")
-    assert env["WS_LNK"] == str(lnk)
-    assert env["WS_ARGS"] == f'"{script}"'
-    assert env["WS_WD"] == str(wc.SCRIPT_DIR)
-    assert env["WS_ICON"] == f"{wc.ICON_PATH},0"
-    assert Path(env["WS_TARGET"]).parent == Path(sys.executable).parent
-    for path in (str(lnk), script, str(wc.SCRIPT_DIR), str(wc.ICON_PATH), env["WS_TARGET"]):
-        assert all(path not in arg for arg in argv)
-    assert kwargs["check"] is True and kwargs["timeout"]
+    sets = {slot: args for pointer, slot, args in shell.calls if pointer == "link"}
+    assert Path(sets[wc.LINK_SET_PATH][0]).parent == Path(sys.executable).parent
+    assert sets[wc.LINK_SET_ARGUMENTS] == (f'"{script}"',)
+    assert sets[wc.LINK_SET_WORKING_DIR] == (str(wc.SCRIPT_DIR),)
+    assert sets[wc.LINK_SET_ICON] == (str(wc.ICON_PATH), 0)
+    assert ("file", wc.PERSIST_SAVE, (str(lnk), 1)) in shell.calls
 
 
 def test_turning_on_raises_when_no_shortcut_appears(appdata, monkeypatch):
-    monkeypatch.setattr(wc.subprocess, "run", lambda argv, **kw: subprocess.CompletedProcess(argv, 0))
+    _FakeShell(monkeypatch, saves=False)
     with pytest.raises(OSError):
         wc.set_start_with_windows(True)
     assert not wc.startup_enabled()
 
 
 def test_turning_on_raises_when_shortcut_target_differs(appdata, monkeypatch):
-    def fake_run(argv, **kwargs):
-        Path(kwargs["env"]["WS_LNK"]).write_bytes(b"lnk")
-        return subprocess.CompletedProcess(argv, 0, stdout=r"C:\???\pythonw.exe".encode("utf-8"))
-
-    monkeypatch.setattr(wc.subprocess, "run", fake_run)
+    _FakeShell(monkeypatch, stored=r"C:\???\pythonw.exe")
     with pytest.raises(OSError):
         wc.set_start_with_windows(True)
 
 
-class _FakeKernel32:
-    def __init__(self, windows_dir: str):
-        self.windows_dir = windows_dir
-
-    def GetSystemWindowsDirectoryW(self, buf, size):
-        buf.value = self.windows_dir
-        return len(self.windows_dir)
-
-
-def _powershell_used(tmp_path, monkeypatch, kernel32) -> str:
-    monkeypatch.setenv("SystemRoot", ".")  # a parent process can set this to anything
-    monkeypatch.setattr(wc.ctypes, "windll", types.SimpleNamespace(kernel32=kernel32), raising=False)
-    calls = []
-
-    def fake_run(argv, **kwargs):
-        calls.append(argv)
-        Path(kwargs["env"]["WS_LNK"]).write_bytes(b"lnk")
-        return subprocess.CompletedProcess(argv, 0, stdout=kwargs["env"]["WS_TARGET"].encode("utf-8"))
-
-    monkeypatch.setattr(wc.subprocess, "run", fake_run)
-    wc.write_shortcut(tmp_path / "x.lnk", wc.ShortcutSpec(r"C:\py\pythonw.exe", '"s.py"', r"C:\app", r"C:\app\i.ico,0"))
-    return calls[0][0]
-
-
-def test_powershell_comes_from_the_os_windows_folder_not_systemroot(tmp_path, monkeypatch):
-    used = _powershell_used(tmp_path, monkeypatch, _FakeKernel32(r"D:\Win"))
-    assert used == r"D:\Win\System32\WindowsPowerShell\v1.0\powershell.exe"
-
-
-def test_relative_os_answer_falls_back_to_c_windows(tmp_path, monkeypatch):
-    used = _powershell_used(tmp_path, monkeypatch, _FakeKernel32("."))
-    assert used == r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe"
+def test_a_shortcut_call_windows_refuses_raises_oserror(appdata, monkeypatch):
+    def refuse(work):
+        raise OSError("Windows shortcut call 6 failed (0x80070005)")
+    monkeypatch.setattr(wc, "_with_shell_link", refuse)
+    with pytest.raises(OSError) as raised:
+        wc.set_start_with_windows(True)
+    assert len(str(raised.value)) < 250
+    assert not wc.startup_enabled()
 
 
 def test_turning_off_removes_only_wallswap_lnk(appdata):
@@ -154,23 +133,6 @@ def test_startup_path_reads_appdata_at_call_time(tmp_path, monkeypatch):
     assert first.is_relative_to(tmp_path / "first") and second.is_relative_to(tmp_path / "second")
     assert second.name == wc.STARTUP_SHORTCUT_NAME
     assert not os.path.exists(second)
-
-
-@pytest.mark.parametrize("failure", [
-    subprocess.CalledProcessError(1, ["powershell.exe", "-Command", wc.SHORTCUT_PS],
-                                  stderr=b"At line:1 char:5\r\nAccess to the path is denied.\r\n"),
-    subprocess.TimeoutExpired(["powershell.exe", "-Command", wc.SHORTCUT_PS], 15),
-])
-def test_failed_powershell_gives_a_short_reason_not_the_script(appdata, monkeypatch, failure):
-    def run(*args, **kwargs):
-        raise failure
-    monkeypatch.setattr(wc.subprocess, "run", run)
-    with pytest.raises(OSError) as raised:
-        wc.set_start_with_windows(True)
-    message = str(raised.value)
-    assert "WallSwapShortcut" not in message and len(message) < 250
-    if isinstance(failure, subprocess.CalledProcessError):
-        assert "Access to the path is denied." in message
 
 
 # ── Taking over an existing Start with Windows shortcut (installed exe only) ──
@@ -237,7 +199,7 @@ def test_take_over_rewrites_an_unreadable_shortcut(appdata, monkeypatch, tmp_pat
 
 def test_a_failing_take_over_never_stops_the_app(monkeypatch):
     def boom():
-        raise OSError("PowerShell said: no")
+        raise OSError("Access is denied.")
     monkeypatch.setattr(wc, "take_over_startup_shortcut", boom)
     wc.WallSwapApp._take_over_startup_shortcut(object())  # logged, not raised
 

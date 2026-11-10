@@ -81,7 +81,9 @@ IDs are stable: never renumber, retire with a note.
   for now; only a definite yes/no is recorded. Code: `_museum_get`, `fetch_from_museum`.
 - **INV-13 · One wallpaper change at a time.** A change requested while one is running is dropped. Code:
   `_change_wallpaper`.
-- **INV-14 · No change while a fullscreen app (a game) is in front.** The change is skipped and tried
+- **INV-14 · No change while a fullscreen app (a game) is in front**, unless `pause_in_fullscreen` is off
+  (it is on by default; read from memory, so a hand edit to the file applies from the next change that
+  happens). The change is skipped and tried
   again every `RETRY_SECONDS` (a minute) until the app is no longer in front; a change that fails (offline) is
   retried the same way, slowing to `SLOW_RETRY_SECONDS` after `FAST_RETRIES` failures in a row. The normal interval
   restarts from the change that worked; nothing is retried while paused. Code: `retry_plan`, `WallSwapApp.tick`
@@ -101,8 +103,9 @@ IDs are stable: never renumber, retire with a note.
   sets. Code: `apply_wallpaper_fit`. Tests: `tests/test_metered_fit.py`.
 - **INV-16 · Outside its own folder, WallSwap writes only `Startup\WallSwap.lnk`,** and only when the user flips
   Start with Windows or, in the packaged exe, to re-point one that already exists at this exe (never creating it);
-  that exact file is the only one it deletes there. The shortcut is written by an absolute-path PowerShell (Windows
-  folder from the OS), with paths passed only through environment variables. (The installer, a separate program,
+  that exact file is the only one it deletes there. The shortcut is written and read inside the app's own process through the
+  shell's IShellLinkW (`_with_shell_link`); no PowerShell or other program is started for it, because an exe that
+  launches a hidden PowerShell to put itself in Startup is what antivirus behaviour monitors flag. (The installer, a separate program,
   also writes it when its sign-in box is ticked.) Code: `startup_shortcut_path`, `write_shortcut`,
   `take_over_startup_shortcut`, `set_start_with_windows`.
 

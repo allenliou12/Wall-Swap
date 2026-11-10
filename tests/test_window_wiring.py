@@ -1,7 +1,6 @@
 """The tray side of the Settings window: Save goes through Settings.update, and the window never imports the app."""
 import ast
 import json
-import subprocess
 from pathlib import Path
 
 import pytest
@@ -86,14 +85,9 @@ def test_broken_file_refuses_save_and_leaves_the_shortcut(app, tmp_settings, sho
     assert shortcut_calls == []
 
 
-@pytest.mark.parametrize("failure", [
-    OSError("access denied"),
-    subprocess.CalledProcessError(1, "powershell"),
-    subprocess.TimeoutExpired("powershell", 15),
-])
-def test_shortcut_failure_still_keeps_the_saved_settings(app, tmp_settings, monkeypatch, failure):
+def test_shortcut_failure_still_keeps_the_saved_settings(app, tmp_settings, monkeypatch):
     def fail(enabled):
-        raise failure
+        raise OSError("access denied")
 
     monkeypatch.setattr(wc, "set_start_with_windows", fail)
     patch = wc.settings_patch(tmp_settings.snapshot(), {**tmp_settings.snapshot(), "interval_minutes": 120})

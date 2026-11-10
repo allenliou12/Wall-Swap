@@ -121,3 +121,35 @@ def test_covers_monitor(window, monitor) -> None:
 ])
 def test_does_not_cover_monitor(window) -> None:
     assert wc._covers(wc.ctypes.wintypes.RECT(*window), wc.ctypes.wintypes.RECT(*PRIMARY_MONITOR)) is False
+
+
+@pytest.fixture
+def app(monkeypatch):
+    app = wc.WallSwapApp()
+    monkeypatch.setattr(wc, "is_fullscreen_app_running", lambda: True)
+    monkeypatch.setattr(wc.settings, "reload", lambda: True)
+    monkeypatch.setattr(wc, "set_wallpaper", lambda path: None)
+    monkeypatch.setattr(wc, "set_lock_screen", lambda path: None)
+    monkeypatch.setattr(wc, "apply_wallpaper_fit", lambda fit: None)
+    monkeypatch.setattr(wc, "is_metered", lambda: False)
+    monkeypatch.setattr(wc, "get_new_wallpaper", lambda: wc.Wallpaper("x.jpg", "wallhaven", "x", key="x"))
+    return app
+
+
+def test_a_fullscreen_app_skips_the_change_and_retries(app, monkeypatch) -> None:
+    monkeypatch.setitem(wc.settings.data, "pause_in_fullscreen", True)
+    assert app._change_wallpaper() == "skipped"
+    assert app.retry_after == wc.RETRY_SECONDS
+
+
+def test_with_the_pause_off_a_fullscreen_app_does_not_stop_the_change(app, monkeypatch) -> None:
+    monkeypatch.setitem(wc.settings.data, "pause_in_fullscreen", False)
+    assert app._change_wallpaper() == "set"
+    assert app.retry_after is None
+
+
+def test_the_pause_is_on_by_default_and_travels_in_the_window_patch() -> None:
+    assert wc.DEFAULT_SETTINGS["pause_in_fullscreen"] is True
+    before = wc.settings.snapshot()
+    patch = wc.settings_patch(before, {**before, "pause_in_fullscreen": not before["pause_in_fullscreen"]})
+    assert patch["set"] == [(("pause_in_fullscreen",), not before["pause_in_fullscreen"])]

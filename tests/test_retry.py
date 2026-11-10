@@ -85,3 +85,46 @@ def test_a_change_already_running_leaves_the_plan_alone(app):
     finally:
         app.change_lock.release()
     assert (app.retry_after, app.failures, app.attempts) == (60, 2, 0)
+
+
+@pytest.mark.parametrize("paused, outcome, remaining, text", [
+    (False, "set", 30 * 60, "Next change in 30 min"),
+    (False, None, 61, "Next change in 2 min"),      # rounded up
+    (False, "set", 5, "Next change in 1 min"),      # never 0
+    (False, "set", 0, "Next change in 1 min"),
+    (False, "set", 2 * 60 * 60, "Next change in 2 h"),
+    (False, "nothing", 80 * 60, "Next change in 1 h 20 min"),
+    (False, "skipped", 60, "Waiting for the fullscreen app to close"),
+    (False, "failed", 10 * 60, "Trying again in 10 min"),
+    (True, "skipped", 60, "Paused"),
+])
+def test_the_menu_line_says_when_the_next_change_is_or_why_it_waits(paused, outcome, remaining, text):
+    assert wc.next_change_text(paused, outcome, remaining) == text
+
+
+def test_the_status_counts_down_and_names_a_fullscreen_wait(app):
+    app.outcomes = ["skipped", "set"]
+    assert app.status_text() == "Next change in 30 min"
+    _run(app, 10 * 60)
+    assert app.status_text() == "Next change in 20 min"
+    _run(app, 20 * 60)
+    assert app.status_text() == "Waiting for the fullscreen app to close"
+    _run(app, 60)
+    assert app.status_text() == "Next change in 30 min"
+    app.paused = True
+    assert app.status_text() == "Paused"
+
+
+def test_the_menu_is_rebuilt_when_the_minute_shown_changes_but_not_while_a_menu_is_open(app, monkeypatch):
+    rebuilt = []
+    monkeypatch.setattr(app, "refresh_menu", lambda: (rebuilt.append(app.status_text()),
+                                                      setattr(app, "status_shown", app.status_text())))
+    monkeypatch.setattr(wc, "menu_is_open", lambda: False)
+    _run(app, 60)
+    assert rebuilt == ["Next change in 30 min", "Next change in 29 min"]
+    monkeypatch.setattr(wc, "menu_is_open", lambda: True)
+    _run(app, 120)
+    assert len(rebuilt) == 2  # an open menu is left alone
+    monkeypatch.setattr(wc, "menu_is_open", lambda: False)
+    _run(app, 5)
+    assert rebuilt[-1] == "Next change in 27 min"
