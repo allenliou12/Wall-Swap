@@ -62,7 +62,11 @@ IDs are stable: never renumber, retire with a note.
   for now; only a definite yes/no is recorded. Code: `_museum_get` `:961`, `fetch_from_museum` `:933-954`.
 - **INV-13 · One wallpaper change at a time.** A change requested while one is running is dropped. Code:
   `_change_wallpaper` `:1257`.
-- **INV-14 · No change while a fullscreen app (a game) is in front** — the change is skipped, not queued. Code:
+- **INV-14 · No change while a fullscreen app (a game) is in front.** The change is skipped and tried
+  again every `RETRY_SECONDS` (a minute) until the app is no longer in front; a change that fails (offline) is
+  retried the same way, slowing to `SLOW_RETRY_SECONDS` after `FAST_RETRIES` failures in a row. The normal interval
+  restarts from the change that worked; nothing is retried while paused. Code: `retry_plan`, `WallSwapApp.tick`
+  (`tests/test_retry.py`),
   `_do_change_wallpaper` `:1267`, `is_fullscreen_app_running` `:598`. "Fullscreen" = the foreground window covers
   the whole monitor it is on (any monitor), is not the desktop, and is not an ordinary maximized window (maximized
   *with* a full title bar). Tested with a faked user32 (`tests/test_fullscreen.py`); the real-window checks

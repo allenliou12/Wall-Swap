@@ -7,7 +7,7 @@ Small Windows tray app that changes my wallpaper (and lock screen) every 30 minu
 - Public-domain paintings from [the Met's open access API](https://metmuseum.github.io/)
 - Your own folders of screenshots or wallpapers
 
-Everything is landscape and at least as big as your screen (your biggest one, if you have several). Matching the screen never asks for more than 2560x1440, so a 4K screen still gets 1440p images; pick 1080p, 1440p or 4K yourself if you'd rather. It doesn't repeat images, and it won't change the wallpaper while a fullscreen game is running. No API keys needed.
+Everything is landscape and at least as big as your screen (your biggest one, if you have several). Matching the screen never asks for more than 2560x1440, so a 4K screen still gets 1440p images; pick 1080p, 1440p or 4K yourself if you'd rather. It doesn't repeat images, and it won't change the wallpaper while a fullscreen game is running (it catches up within a minute of you leaving the game, and does the same if a download fails because you're offline). No API keys needed.
 
 ## Installing it
 

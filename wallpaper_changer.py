@@ -155,6 +155,11 @@ MAX_SEARCH_LENGTH = 100
 # Long enough for any real game title, short enough to fit the tray menu label
 MAX_GAME_NAME_LENGTH = 60
 INTERVAL_CHOICES = [15, 30, 60, 120]  # minutes, offered in the tray menu
+# A change that was skipped (a game in front) or failed (offline) is tried again soon instead of a whole
+# interval later. Failed downloads slow down after a few tries so a PC left offline doesn't fill the log.
+RETRY_SECONDS = 60
+SLOW_RETRY_SECONDS = 300
+FAST_RETRIES = 5
 UI_POLL_MS = 100  # how often the Tk thread runs calls queued from the tray; fast enough to feel instant, cheap when idle
 SOURCE_LABELS = {
     "wallhaven": "Wallhaven",
@@ -1386,6 +1391,18 @@ def download_wallpaper(fetch, attempts: int = 5) -> Wallpaper | None:
 
 
 # ─── System Tray App ─────────────────────────────────────────
+def retry_plan(outcome: str, failures: int) -> tuple[int | None, int]:
+    """After a change attempt: (seconds until it is tried again, or None for the normal interval; failed tries
+    in a row). outcome is "set", "skipped" (fullscreen app in front), "failed" or "busy" (another change is
+    already running, which will make its own plan)."""
+    if outcome == "skipped":
+        return RETRY_SECONDS, failures  # checking for a fullscreen window costs nothing, so never slow down
+    if outcome == "failed":
+        failures += 1
+        return (RETRY_SECONDS if failures <= FAST_RETRIES else SLOW_RETRY_SECONDS), failures
+    return None, 0
+
+
 def _safe_filename(text: str) -> str:
     """Turn a title into something Windows accepts as a file name."""
     name = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "", text).strip(" .")
@@ -1401,6 +1418,8 @@ class WallSwapApp:
         self.current: Wallpaper | None = None
         self.wallpapers_set = 0
         self.elapsed = 0
+        self.retry_after: int | None = None  # seconds until a skipped or failed change is tried again
+        self.failures = 0                    # failed changes in a row
         self.change_lock = threading.Lock()  # one wallpaper change at a time
         self.folder_dialog_open = False
         self.root = None  # the hidden Tk root; every Tk call happens on its (the main) thread
@@ -1457,27 +1476,33 @@ class WallSwapApp:
         self.elapsed = 0
         threading.Thread(target=self._change_wallpaper, daemon=True).start()
 
-    def _change_wallpaper(self):
-        """Fetch and set a new wallpaper, unless a change is already in progress."""
+    def _change_wallpaper(self) -> str:
+        """Fetch and set a new wallpaper, unless a change is already in progress. Returns what happened
+        ("set", "skipped", "failed" or "busy") and plans the retry for a change that didn't happen."""
         if not self.change_lock.acquire(blocking=False):
             log.info("A wallpaper change is already in progress, ignoring this one")
-            return
+            return "busy"
         try:
-            self._do_change_wallpaper()
+            outcome = self._do_change_wallpaper()
+            self.retry_after, self.failures = retry_plan(outcome, self.failures)
+            self.elapsed = 0  # the wait for the retry, or the next interval, starts now
+            if self.retry_after:
+                log.info(f"Trying again in {self.retry_after} seconds")
+            return outcome
         finally:
             self.change_lock.release()
 
-    def _do_change_wallpaper(self):
+    def _do_change_wallpaper(self) -> str:
         if is_fullscreen_app_running():
             log.info("Fullscreen app detected, skipping wallpaper change")
-            return
+            return "skipped"
 
         settings.reload()  # pick up hand edits to settings.json
         log.info("Fetching new wallpaper...")
         wallpaper = get_new_wallpaper()
         if not wallpaper:
             log.warning("Could not fetch a new wallpaper this round")
-            return
+            return "failed"
         try:
             set_wallpaper(wallpaper.path)
             set_lock_screen(wallpaper.path)
@@ -1486,8 +1511,10 @@ class WallSwapApp:
             if self.icon:
                 self.icon.title = f"WallSwap: {wallpaper.title}"[:127]
             self.refresh_menu()
+            return "set"
         except Exception as e:
             log.error(f"Failed to set wallpaper: {e}")
+            return "failed"
 
     # ── Current wallpaper ──
     def save_favourite(self, _=None):
@@ -1776,18 +1803,21 @@ class WallSwapApp:
         # Initial wallpaper on startup
         self._change_wallpaper()
 
-        self.elapsed = 0
         while self.running:
             time.sleep(5)
             if not self.running:
                 break
-            if self.paused:
-                continue
+            self.tick(5)
 
-            self.elapsed += 5
-            if self.elapsed >= settings.interval_seconds:
-                self.elapsed = 0
-                self._change_wallpaper()
+    def tick(self, seconds: int):
+        """Timer thread: count the time passed and change the wallpaper when the interval, or the shorter
+        wait after a skipped or failed change, is up. Nothing counts and nothing is retried while paused."""
+        if self.paused:
+            return
+        self.elapsed += seconds
+        if self.elapsed >= (self.retry_after or settings.interval_seconds):
+            self.elapsed = 0
+            self._change_wallpaper()
 
     def build_menu(self) -> pystray.Menu:
         has_current = lambda item: self.current is not None  # noqa: E731
