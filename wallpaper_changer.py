@@ -10,6 +10,7 @@ Usage (see README.md):
 """
 
 import asyncio
+import collections
 import copy
 import ctypes
 import ctypes.wintypes
@@ -160,6 +161,7 @@ INTERVAL_CHOICES = [15, 30, 60, 120]  # minutes, offered in the tray menu
 RETRY_SECONDS = 60
 SLOW_RETRY_SECONDS = 300
 FAST_RETRIES = 5
+HISTORY_LENGTH = 20  # how many earlier wallpapers Previous can step back through (this run only)
 UI_POLL_MS = 100  # how often the Tk thread runs calls queued from the tray; fast enough to feel instant, cheap when idle
 SOURCE_LABELS = {
     "wallhaven": "Wallhaven",
@@ -1416,6 +1418,8 @@ class WallSwapApp:
         self.icon = None
         self.timer_thread = None
         self.current: Wallpaper | None = None
+        # Wallpapers shown before the current one, oldest first; Previous takes from the end
+        self.history: collections.deque[Wallpaper] = collections.deque(maxlen=HISTORY_LENGTH)
         self.wallpapers_set = 0
         self.elapsed = 0
         self.retry_after: int | None = None  # seconds until a skipped or failed change is tried again
@@ -1503,18 +1507,51 @@ class WallSwapApp:
         if not wallpaper:
             log.warning("Could not fetch a new wallpaper this round")
             return "failed"
+        previous = self.current
         try:
-            set_wallpaper(wallpaper.path)
-            set_lock_screen(wallpaper.path)
-            self.current = wallpaper
-            self.wallpapers_set += 1
-            if self.icon:
-                self.icon.title = f"WallSwap: {wallpaper.title}"[:127]
-            self.refresh_menu()
-            return "set"
+            self._show(wallpaper)
         except Exception as e:
             log.error(f"Failed to set wallpaper: {e}")
             return "failed"
+        if previous:
+            self.history.append(previous)
+        self.refresh_menu()
+        return "set"
+
+    def _show(self, wallpaper: Wallpaper):
+        """Put a wallpaper on the desktop and lock screen and make it the current one. Raises if Windows refuses."""
+        set_wallpaper(wallpaper.path)
+        set_lock_screen(wallpaper.path)
+        self.current = wallpaper
+        self.wallpapers_set += 1
+        if self.icon:
+            self.icon.title = f"WallSwap: {wallpaper.title}"[:127]
+
+    def previous_wallpaper(self, _=None):
+        """Go back to the wallpaper shown before this one (tray thread: the work happens on its own thread)."""
+        threading.Thread(target=self._previous_wallpaper, daemon=True).start()
+
+    def _previous_wallpaper(self):
+        if not self.change_lock.acquire(blocking=False):
+            return  # a change is running; the menu is as good as new once it finishes
+        try:
+            while self.history:
+                wallpaper = self.history.pop()
+                if not Path(wallpaper.path).exists():
+                    continue  # cleaned up, or the user moved their own file: try the one before
+                try:
+                    self._show(wallpaper)
+                except Exception as e:
+                    log.error(f"Failed to set the previous wallpaper: {e}")
+                    continue
+                # Going back is a change like any other: the interval starts again and no retry is pending
+                self.elapsed, self.retry_after, self.failures = 0, None, 0
+                log.info(f"Back to the previous wallpaper: {wallpaper.title}")
+                return
+            self.notify("There's no earlier wallpaper to go back to.")
+        finally:
+            self.change_lock.release()
+            self.refresh_menu()
 
     # ── Current wallpaper ──
     def save_favourite(self, _=None):
@@ -1825,6 +1862,8 @@ class WallSwapApp:
             pystray.MenuItem(f"WallSwap {APP_VERSION}", None, enabled=False),
             pystray.Menu.SEPARATOR,
             pystray.MenuItem("🔄 Next Wallpaper", self.next_wallpaper, default=True),
+            pystray.MenuItem("⏮ Previous Wallpaper", self.previous_wallpaper,
+                             enabled=lambda item: bool(self.history)),
             pystray.MenuItem("⭐ Favourite", self.save_favourite, enabled=has_current),
             pystray.MenuItem("🔗 Details", self.open_source, enabled=has_current),
             pystray.Menu.SEPARATOR,
