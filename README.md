@@ -120,6 +120,16 @@ The window saves to `Pictures\WallSwap\settings.json`. You can still edit it by 
 
 If you're upgrading from the version before the settings window, your old file is copied to `settings.json.bak` the first time the new version saves, and your old searches, game and folders carry over.
 
+## Bandwidth
+
+WallSwap is meant to stay out of the way of games and calls:
+
+- A change downloads one image, usually 2-5 MB. At the default 30 minutes that is roughly 5-10 MB an hour.
+- Nothing is downloaded while a fullscreen app is in front.
+- Changes it makes by itself download at no more than about 1 MB per second, so they can't fill your connection. Next Wallpaper, which you click yourself, runs at full speed.
+- Wallhaven images over 10 MB are skipped.
+- On a metered connection it downloads nothing unless you allow it (see Settings).
+
 ## Files
 
 Downloads go to `Pictures\WallSwap` and only the newest 50 are kept, so use Favourite for anything you want to hold on to. Your own folders are never touched. The log (`wallswap.log`) is in the same place if something isn't working.

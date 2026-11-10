@@ -17,6 +17,10 @@ IDs are stable: never renumber, retire with a note.
   Code: `_check_url`, `safe_get`. A new source adds its host to `ALLOWED_HOSTS`, never a bare `requests.get`.
 - **INV-2 · Bounded downloads.** One response may send at most `MAX_DOWNLOAD_BYTES` (images) or `MAX_API_BYTES`
   (JSON), and one request gives up after `DOWNLOAD_DEADLINE` seconds in total. Code: `safe_get`.
+- **INV-21 · Background downloads are gentle.** A change the timer starts runs inside `gentle_downloads`, which holds
+  every `safe_get` on that thread to `GENTLE_BYTES_PER_SECOND`; changes the user asks for are not slowed. Wallhaven
+  results listed as larger than `MAX_WALLHAVEN_FILE_BYTES` are never downloaded. Code: `pace_delay`, `safe_get`,
+  `_too_big`, `WallSwapApp._change_wallpaper(gentle=True)`. Tests: `tests/test_gentle.py`.
 - **INV-3 · Bounded image decoding.** Downloaded images over `MAX_IMAGE_PIXELS` raise instead of decoding (Pillow's
   bomb warning is an error). The user's own files are only measured, not decoded, so that limit is relaxed there.
   Code: `is_landscape_wallpaper`.

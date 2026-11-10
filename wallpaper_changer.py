@@ -92,6 +92,8 @@ USER_AGENT = f"WallSwap/{APP_VERSION} (Windows Desktop Wallpaper Changer)"
 # results are often low-rated). Not applied to the favourite-game searches: few game
 # wallpapers exist and most have only a handful of favourites.
 WALLHAVEN_MIN_FAVORITES = 30
+# Wallhaven lists each result's file size, so the rare huge one is skipped without downloading it
+MAX_WALLHAVEN_FILE_BYTES = 10 * 1024 * 1024
 MAX_WALLHAVEN_PAGES = 3     # how deep a topic search goes once its earlier pages are used up (24 results a page)
 
 # Download safety limits: only fetch over https from these sites (and their subdomains),
@@ -109,6 +111,10 @@ MAX_DOWNLOAD_BYTES = 50 * 1024 * 1024   # images
 MAX_API_BYTES = 5 * 1024 * 1024         # JSON responses
 DOWNLOAD_DEADLINE = 120                 # seconds per request, in total
 MAX_IMAGE_PIXELS = 64_000_000           # ~8000x8000; a 4K wallpaper is ~8 million pixels
+# Changes WallSwap starts by itself (the timer) download no faster than this, so a wallpaper arriving in the
+# background can't fill the connection and make a game or a call stutter. Changes the user asks for (Next,
+# Never Show Again) run at full speed.
+GENTLE_BYTES_PER_SECOND = 1_000_000
 
 # Start with Windows: the one file WallSwap writes outside its own folder (INV-16)
 STARTUP_SHORTCUT_NAME = "WallSwap.lnk"
@@ -1210,11 +1216,36 @@ def _check_url(url: str):
         raise DownloadError(f"Refusing to fetch {url!r}: not an https address WallSwap uses")
 
 
+_pace = threading.local()  # .rate: bytes per second this thread's downloads are held to (unset: full speed)
+
+
+class gentle_downloads:
+    """While active, every download on this thread is held to GENTLE_BYTES_PER_SECOND."""
+
+    def __enter__(self):
+        self._before = getattr(_pace, "rate", None)
+        _pace.rate = GENTLE_BYTES_PER_SECOND
+
+    def __exit__(self, *exc):
+        _pace.rate = self._before
+
+
+def pace_delay(received: int, elapsed: float, rate: int | None) -> float:
+    """How long to wait before reading more, so `received` bytes in `elapsed` seconds stays at or under `rate`
+    bytes per second. 0 when there is no limit or the download is already slower than it."""
+    if not rate:
+        return 0.0
+    return max(0.0, received / rate - elapsed)
+
+
 def safe_get(url: str, *, params: dict | None = None, timeout: int = 15,
              max_bytes: int = MAX_DOWNLOAD_BYTES) -> Fetched:
     """GET that only talks to ALLOWED_HOSTS over https (redirects included), stops past
-    max_bytes, and gives up after DOWNLOAD_DEADLINE seconds in total."""
-    deadline = time.monotonic() + DOWNLOAD_DEADLINE
+    max_bytes, and gives up after DOWNLOAD_DEADLINE seconds in total. Inside gentle_downloads it also reads
+    no faster than GENTLE_BYTES_PER_SECOND."""
+    started = time.monotonic()
+    deadline = started + DOWNLOAD_DEADLINE
+    rate = getattr(_pace, "rate", None)
     for _ in range(4):  # the request plus at most 3 redirects, each one checked
         _check_url(url)
         with requests.get(url, params=params, headers={"User-Agent": USER_AGENT},
@@ -1233,6 +1264,9 @@ def safe_get(url: str, *, params: dict | None = None, timeout: int = 15,
                 if time.monotonic() > deadline:
                     raise DownloadError(f"{url} took longer than {DOWNLOAD_DEADLINE}s")
                 chunks.append(chunk)
+                wait = pace_delay(total, time.monotonic() - started, rate)
+                if wait:
+                    time.sleep(wait)  # not reading lets the connection slow itself down to this pace
             return Fetched(resp.status_code, b"".join(chunks))
     raise DownloadError(f"Too many redirects for {url}")
 
@@ -1299,6 +1333,11 @@ def count_wallhaven(query: str, exclude: list[str] = ()) -> int:
     return total
 
 
+def _too_big(file_size) -> bool:
+    """Is a Wallhaven result's listed size over MAX_WALLHAVEN_FILE_BYTES? An unlisted or odd size is not."""
+    return isinstance(file_size, int) and not isinstance(file_size, bool) and file_size > MAX_WALLHAVEN_FILE_BYTES
+
+
 def fetch_from_wallhaven(queries: list[str], sorting: str | None = None,
                          source: str = "wallhaven", exclude: list[str] = ()) -> Wallpaper | None:
     """Fetch a random screen-sized wallpaper from Wallhaven for one of the searches, leaving out results
@@ -1346,6 +1385,7 @@ def fetch_from_wallhaven(queries: list[str], sorting: str | None = None,
                 if wp.get("id", "") not in seen
                 and not (source == "wallhaven" and wp.get("favorites", 0) < WALLHAVEN_MIN_FAVORITES)
                 and fits_screen(wp.get("dimension_x", 0), wp.get("dimension_y", 0))  # not too small or portrait
+                and not _too_big(wp.get("file_size"))
                 and wp.get("path", "")
             ]
             retry_later = False  # a download failed in a way that may work next time
@@ -1766,13 +1806,19 @@ class WallSwapApp:
         self.elapsed = 0
         threading.Thread(target=self._change_wallpaper, daemon=True).start()
 
-    def _change_wallpaper(self) -> str:
+    def _change_wallpaper(self, gentle: bool = False) -> str:
         """Fetch and set a new wallpaper, unless a change is already in progress. Returns what happened
-        ("set", "skipped", "failed" or "busy") and plans the retry for a change that didn't happen."""
+        ("set", "skipped", "failed" or "busy") and plans the retry for a change that didn't happen.
+
+        gentle: a change nobody asked for (the timer's); its downloads are slowed so they can't be felt.
+        """
         if not self.change_lock.acquire(blocking=False):
             log.info("A wallpaper change is already in progress, ignoring this one")
             return "busy"
         try:
+            if gentle:
+                with gentle_downloads():
+                    return self._change_and_plan()
             return self._change_and_plan()
         finally:
             self.change_lock.release()
@@ -2261,7 +2307,7 @@ class WallSwapApp:
         """Background timer that triggers wallpaper changes."""
         self.auto_check_for_updates()
         # Initial wallpaper on startup
-        self._change_wallpaper()
+        self._change_wallpaper(gentle=True)
 
         while self.running:
             time.sleep(5)
@@ -2278,7 +2324,7 @@ class WallSwapApp:
         self.elapsed += seconds
         if self.elapsed >= (self.retry_after or settings.interval_seconds):
             self.elapsed = 0
-            self._change_wallpaper()
+            self._change_wallpaper(gentle=True)
 
     def build_menu(self) -> pystray.Menu:
         has_current = lambda item: self.current is not None  # noqa: E731
