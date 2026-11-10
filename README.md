@@ -53,6 +53,8 @@ The first time it runs, the settings window opens so you can pick what you want.
 
 Right-click the tray icon and pick Settings… to open it again.
 
+<img src="docs/settings-window.png" alt="The WallSwap settings window: topics, words to never show, favourite game, folders, source mix and interval" width="420">
+
 - **Topics:** tick the ones you want. Click a topic's arrow to see its searches; click a search to remove it, or type your own and press Add. Only ticked topics are searched, and every search in them is equally likely.
 - **Never show:** words to keep out of Wallhaven results, in every topic and the favourite game. One word each (like `car`), up to 10. Met paintings and your own folders aren't affected.
 - **Favourite game:** a name and some Wallhaven searches for it. Leave it empty if you don't want one. There aren't many game wallpapers, so once they've all been shown, that share uses the game's folders instead.

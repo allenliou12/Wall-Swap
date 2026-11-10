@@ -74,7 +74,8 @@ class TagList(ctk.CTkFrame):
         self._check_id = 0  # bumped whenever the message line changes, so a late answer can't overwrite a newer one
         self._message_chip = None  # the chip the message line is about (being checked, or its count shown)
         self._chips: list[tuple[str, ctk.CTkButton]] = []
-        self._chip_frame = ctk.CTkFrame(self, fg_color="transparent")
+        # height=1: an empty CTkFrame is 200 pixels tall, which left a large gap under an empty list
+        self._chip_frame = ctk.CTkFrame(self, fg_color="transparent", height=1)
         self._chip_frame.pack(fill="x")
         for search in searches:
             self._add_chip(search)
