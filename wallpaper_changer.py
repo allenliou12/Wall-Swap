@@ -81,6 +81,7 @@ USER_AGENT = f"WallSwap/{APP_VERSION} (Windows Desktop Wallpaper Changer)"
 # results are often low-rated). Not applied to the favourite-game searches: few game
 # wallpapers exist and most have only a handful of favourites.
 WALLHAVEN_MIN_FAVORITES = 30
+MAX_WALLHAVEN_PAGES = 3     # how deep a topic search goes once its earlier pages are used up (24 results a page)
 
 # Download safety limits: only fetch over https from these sites (and their subdomains),
 # cap how much a single response may send, and give up on downloads that drag on
@@ -1190,48 +1191,55 @@ def fetch_from_wallhaven(queries: list[str], sorting: str | None = None,
     if sorting == "toplist":
         params["topRange"] = random.choice(["3M", "6M", "1y"])
 
+    # Topic searches sorted by toplist or hot always give the same first page, so once everything usable on
+    # it has been shown, look one page further (a little less popular, never past MAX_WALLHAVEN_PAGES).
+    # "random" already gives a fresh page each time, and game searches always use it.
+    pages = MAX_WALLHAVEN_PAGES if source == "wallhaven" and sorting != "random" else 1
+
     try:
-        log.info(f"Trying Wallhaven: query='{query}', sorting={sorting}")
-        resp = safe_get(WALLHAVEN_SEARCH_URL, params=params, max_bytes=MAX_API_BYTES)
-        if resp.status_code != 200:
-            log.warning(f"Wallhaven returned {resp.status_code}")
-            return None
-
-        data = resp.json()
-        wallpapers = data.get("data", [])
-        if not wallpapers:
-            log.info("Wallhaven returned no results")
-            return None
-
-        random.shuffle(wallpapers)
         seen = load_seen_ids() | load_blocked()
+        for page in range(1, pages + 1):
+            params["page"] = page
+            log.info(f"Trying Wallhaven: query='{query}', sorting={sorting}, page={page}")
+            resp = safe_get(WALLHAVEN_SEARCH_URL, params=params, max_bytes=MAX_API_BYTES)
+            if resp.status_code != 200:
+                log.warning(f"Wallhaven returned {resp.status_code}")
+                return None
 
-        for wp in wallpapers:
-            wp_id = wp.get("id", "")
-            wp_url = wp.get("path", "")
-            wp_w = wp.get("dimension_x", 0)
-            wp_h = wp.get("dimension_y", 0)
+            data = resp.json()
+            wallpapers = data.get("data", [])
+            if not wallpapers:
+                log.info("Wallhaven returned no results")
+                return None
 
-            if wp_id in seen:
-                continue
-            if source == "wallhaven" and wp.get("favorites", 0) < WALLHAVEN_MIN_FAVORITES:
-                continue
-            if not fits_screen(wp_w, wp_h):  # too small, or portrait/square
-                continue
-            if not wp_url:
-                continue
+            random.shuffle(wallpapers)
+            usable = [
+                wp for wp in wallpapers
+                if wp.get("id", "") not in seen
+                and not (source == "wallhaven" and wp.get("favorites", 0) < WALLHAVEN_MIN_FAVORITES)
+                and fits_screen(wp.get("dimension_x", 0), wp.get("dimension_y", 0))  # not too small or portrait
+                and wp.get("path", "")
+            ]
+            for wp in usable:
+                wp_id = wp.get("id", "")
+                try:
+                    img_resp = safe_get(wp["path"], timeout=20)
+                except requests.RequestException as e:
+                    log.warning(f"Wallhaven download failed for {wp_id}: {e}")
+                    continue  # try the next result instead of giving up on this search
+                if img_resp.status_code == 200 and len(img_resp.content) > 50_000:
+                    tmp_path = WALLPAPER_DIR / "_temp_wallhaven.jpg"
+                    tmp_path.write_bytes(img_resp.content)
+                    save_seen_id(wp_id)
+                    return Wallpaper(str(tmp_path), source, f"Wallhaven {wp_id} (search: {query})",
+                                     wp.get("url"), key=wp_id)
 
-            try:
-                img_resp = safe_get(wp_url, timeout=20)
-            except requests.RequestException as e:
-                log.warning(f"Wallhaven download failed for {wp_id}: {e}")
-                continue  # try the next result instead of giving up on this search
-            if img_resp.status_code == 200 and len(img_resp.content) > 50_000:
-                tmp_path = WALLPAPER_DIR / "_temp_wallhaven.jpg"
-                tmp_path.write_bytes(img_resp.content)
-                save_seen_id(wp_id)
-                return Wallpaper(str(tmp_path), source, f"Wallhaven {wp_id} (search: {query})",
-                                 wp.get("url"), key=wp_id)
+            if usable:
+                return None  # this page still has unshown wallpapers; their downloads failed, so it isn't used up
+            meta = data.get("meta")
+            last_page = meta.get("last_page") if isinstance(meta, dict) else None
+            if not isinstance(last_page, int) or page >= last_page:
+                return None  # there is no further page
 
     except Exception as e:
         log.warning(f"Wallhaven fetch failed: {e}")
