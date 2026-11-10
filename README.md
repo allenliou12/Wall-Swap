@@ -54,6 +54,7 @@ The first time it runs, the settings window opens so you can pick what you want.
 Right-click the tray icon and pick Settings… to open it again.
 
 - **Topics:** tick the ones you want. Click a topic's arrow to see its searches; click a search to remove it, or type your own and press Add. Only ticked topics are searched, and every search in them is equally likely.
+- **Never show:** words to keep out of Wallhaven results, in every topic and the favourite game. One word each (like `car`), up to 10. Met paintings and your own folders aren't affected.
 - **Favourite game:** a name and some Wallhaven searches for it. Leave it empty if you don't want one. There aren't many game wallpapers, so once they've all been shown, that share uses the game's folders instead.
 - **My folders:** add or remove your own image folders. Only images directly in a folder are used, not subfolders, and WallSwap never changes anything in them.
 - **Source mix:** one slider each for Wallhaven, Met paintings, your folders and your favourite game. The percentage next to each is its real share of changes. A source with nothing to use (no folders, no game searches, no ticked topics) or turned off drops out and says why.
@@ -95,6 +96,7 @@ The window saves to `Pictures\WallSwap\settings.json`. You can still edit it by 
     "nature": {"enabled": true, "searches": ["landscape 4k", "mountains", "forest", "ocean", "aurora borealis"]},
     "...": "eight more topics: space, dark_fantasy, cities, abstract, moon_night, anime, games, movies"
   },
+  "exclude_words": ["car"],
   "game_name": "Path of Exile",
   "game_queries": ["path of exile", "path of exile 2"],
   "local_folders": ["C:\\Users\\<you>\\Pictures\\Path of Exile 2"],

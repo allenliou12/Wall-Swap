@@ -26,7 +26,8 @@ IDs are stable: never renumber, retire with a note.
 
 - **INV-5 · Safe for work.** Wallhaven searches ask for SFW only (`purity=100`) and general + anime categories, no
   people (`categories=110`). Code: `fetch_from_wallhaven` `:856-857`. Search text the user types only ever fills
-  `q`.
+  `q`, and excluded words are added to it only as `-word` for plain words (`wallhaven_q` checks each again, at
+  most `MAX_EXCLUDE_WORDS`), so neither can change another filter. Tests: `tests/test_exclude.py`.
 - **INV-6 · Wallpaper-shaped images only.** Everything shown is landscape and at least `min_size()`: the size the
   user picked (`min_resolution`: 1080p, 1440p or 4K), or for "auto" (and any unknown value) the biggest connected
   screen's real pixel size (long side × short side), each side capped at `MIN_WIDTH` × `MIN_HEIGHT`

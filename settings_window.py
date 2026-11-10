@@ -38,6 +38,8 @@ class WindowDeps:
     game_name_max: int
     version: str = ""                                 # shown in the title bar
     resolution_labels: dict[str, str] = dataclasses.field(default_factory=dict)  # min_resolution value -> label
+    clean_exclude: Callable[[str, list[str]], str | None] | None = None   # an excluded word as stored, or None
+    exclude_problem: Callable[[str, list[str]], str | None] | None = None  # why a word can't be added
     # (search, done): counts Wallhaven's wallpapers off the Tk thread, then calls done(count or None) on it
     count_search: Callable[[str, Callable[[int | None], None]], None] | None = None
 
@@ -61,12 +63,13 @@ class TagList(ctk.CTkFrame):
     """Editable list of searches: click a chip to remove it, type and press Add or Enter to add one."""
 
     def __init__(self, master, searches: list[str], clean, on_change=lambda: None, count_search=None,
-                 is_game: bool = False):
+                 is_game: bool = False, placeholder: str = "Add a search", problem=None):
         super().__init__(master, fg_color="transparent")
         self._clean = clean
         self._on_change = on_change
         self._count_search = count_search
         self._is_game = is_game
+        self._problem = problem  # (text, existing) -> why it can't be added; None uses the search reasons
         self._check_id = 0  # bumped whenever the message line changes, so a late answer can't overwrite a newer one
         self._message_chip = None  # the chip the message line is about (being checked, or its count shown)
         self._chips: list[tuple[str, ctk.CTkButton]] = []
@@ -78,7 +81,7 @@ class TagList(ctk.CTkFrame):
 
         row = ctk.CTkFrame(self, fg_color="transparent")
         row.pack(fill="x", pady=(4, 0))
-        self._entry = ctk.CTkEntry(row, placeholder_text="Add a search")
+        self._entry = ctk.CTkEntry(row, placeholder_text=placeholder)
         self._entry.pack(side="left", fill="x", expand=True)
         self._entry.bind("<Return>", lambda _e: self._add())
         ctk.CTkButton(row, text="Add", width=60, command=self._add).pack(side="left", padx=(6, 0))
@@ -113,7 +116,9 @@ class TagList(ctk.CTkFrame):
         cleaned = self._clean(text, self.values())
         if cleaned is None:
             # clean_search says only "no"; asking it again without the existing searches tells why
-            if not text.split():
+            if self._problem is not None:
+                reason = self._problem(text, self.values()) or "Can't add that"
+            elif not text.split():
                 reason = "Empty"
             elif self._clean(text, []) is None:
                 reason = "Too long"
@@ -275,6 +280,7 @@ class SettingsWindow(ctk.CTkToplevel):
         self._body = body = ctk.CTkScrollableFrame(self)
         body.pack(fill="both", expand=True, padx=12, pady=(12, 0))
         self._build_topics(body)
+        self._build_exclude(body)
         self._build_game(body)
         self._build_folders(body)
         self._build_mix(body)
@@ -299,6 +305,15 @@ class SettingsWindow(ctk.CTkToplevel):
                                 self._refresh_shares, count_search=self.deps.count_search)
                 row.pack(fill="x", pady=1)
                 self._topics[topic] = row
+
+    def _build_exclude(self, body):
+        self._heading(body, "Never show")
+        ctk.CTkLabel(body, text="Wallhaven wallpapers tagged with these words are left out, in every topic and "
+                                "the favourite game. One word each, like car.", text_color=HINT_COLOR, anchor="w",
+                     justify="left", wraplength=560).pack(fill="x")
+        self._exclude = TagList(body, self._snapshot["exclude_words"], self.deps.clean_exclude or (lambda t, e: None),
+                                placeholder="Add a word", problem=self.deps.exclude_problem)
+        self._exclude.pack(fill="x")
 
     def _build_game(self, body):
         self._heading(body, "Favourite game")
@@ -409,6 +424,7 @@ class SettingsWindow(ctk.CTkToplevel):
         return {
             "interval_minutes": self._interval_by_label.get(self._interval.get(), snap["interval_minutes"]),
             "min_resolution": resolution,
+            "exclude_words": self._exclude.values(),
             "game_name": self._game_name.get().strip()[:self.deps.game_name_max],
             "game_queries": self._game_tags.values(),
             "chances": chances,

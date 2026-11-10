@@ -123,6 +123,7 @@ DEFAULT_SETTINGS = {
         "games": {"enabled": False, "searches": ["elden ring", "hollow knight"]},
         "movies": {"enabled": False, "searches": ["blade runner", "dune"]},
     },
+    "exclude_words": [],
     "game_name": "",
     "game_queries": [],
     "local_folders": [],
@@ -154,6 +155,11 @@ TOPIC_LABELS = {  # topic id -> label, in display order; the ids are fixed setti
 }
 # Typed searches only ever fill Wallhaven's q; the cap keeps a pasted paragraph out of it
 MAX_SEARCH_LENGTH = 100
+# Excluded words go into every Wallhaven q as -word. Few and short, so q stays small; one plain word each,
+# because that is the only form Wallhaven documents (-tagname).
+MAX_EXCLUDE_WORDS = 10
+MAX_EXCLUDE_LENGTH = 30
+EXCLUDE_WORD = re.compile(r"\w[\w-]*")
 # Long enough for any real game title, short enough to fit the tray menu label
 MAX_GAME_NAME_LENGTH = 60
 INTERVAL_CHOICES = [15, 30, 60, 120]  # minutes, offered in the tray menu
@@ -319,6 +325,41 @@ def clean_search(text: str, existing: list[str]) -> str | None:
     return cleaned
 
 
+def exclude_word_problem(text: str, existing: list[str]) -> str | None:
+    """Why text can't be added to the excluded words, or None when it can."""
+    word = text.strip().lstrip("-+").strip()
+    if not word:
+        return "Empty"
+    if len(word.split()) > 1:
+        return "One word at a time"
+    if len(word) > MAX_EXCLUDE_LENGTH:
+        return "Too long"
+    if not EXCLUDE_WORD.fullmatch(word):
+        return "Letters, numbers, - and _ only"
+    if word.casefold() in {e.casefold() for e in existing}:
+        return "Already there"
+    if len(existing) >= MAX_EXCLUDE_WORDS:
+        return f"{MAX_EXCLUDE_WORDS} words at most"
+    return None
+
+
+def clean_exclude_word(text: str, existing: list[str]) -> str | None:
+    """The excluded word as it should be stored, or None if it can't be added (exclude_word_problem says why)."""
+    if exclude_word_problem(text, existing):
+        return None
+    return text.strip().lstrip("-+").strip()
+
+
+def wallhaven_q(query: str, exclude: list[str]) -> str:
+    """Wallhaven's q for a search: the search itself, then -word for each excluded word.
+
+    Words are checked again here, because settings.json can be edited by hand: anything that isn't a plain
+    word is left out, so an excluded "word" can never add its own search syntax.
+    """
+    words = [w for w in dict.fromkeys(exclude) if EXCLUDE_WORD.fullmatch(w) and len(w) <= MAX_EXCLUDE_LENGTH]
+    return query + "".join(f" -{w}" for w in words[:MAX_EXCLUDE_WORDS])
+
+
 def _setting_at(data: dict, path: tuple):
     """The value at path inside data, or KeyError/TypeError if it isn't there."""
     for key in path:
@@ -331,7 +372,7 @@ def settings_patch(before: dict, after: dict) -> dict:
 
     Folders are listed as adds and removes, not whole lists, for the same reason.
     """
-    paths = [("interval_minutes",), ("min_resolution",), ("game_name",), ("game_queries",)]
+    paths = [("interval_minutes",), ("min_resolution",), ("exclude_words",), ("game_name",), ("game_queries",)]
     paths += [("chances", s) for s in before["chances"]]
     paths += [("topics", t, f) for t in before["topics"] for f in ("enabled", "searches")]
     changes = []
@@ -1072,10 +1113,11 @@ def wallhaven_filters() -> dict:
     }
 
 
-def count_wallhaven(query: str) -> int:
-    """How many wallpapers Wallhaven has for a search with WallSwap's filters (before the favourites cutoff).
-    Raises on any network, HTTP or format problem."""
-    resp = safe_get(WALLHAVEN_SEARCH_URL, params={"q": query, **wallhaven_filters()}, max_bytes=MAX_API_BYTES)
+def count_wallhaven(query: str, exclude: list[str] = ()) -> int:
+    """How many wallpapers Wallhaven has for a search with WallSwap's filters and excluded words (before the
+    favourites cutoff). Raises on any network, HTTP or format problem."""
+    resp = safe_get(WALLHAVEN_SEARCH_URL, params={"q": wallhaven_q(query, exclude), **wallhaven_filters()},
+                    max_bytes=MAX_API_BYTES)
     resp.raise_for_status()
     total = resp.json()["meta"]["total"]
     if isinstance(total, bool) or not isinstance(total, int) or total < 0:
@@ -1084,8 +1126,9 @@ def count_wallhaven(query: str) -> int:
 
 
 def fetch_from_wallhaven(queries: list[str], sorting: str | None = None,
-                         source: str = "wallhaven") -> Wallpaper | None:
-    """Fetch a random screen-sized wallpaper from Wallhaven for one of the searches."""
+                         source: str = "wallhaven", exclude: list[str] = ()) -> Wallpaper | None:
+    """Fetch a random screen-sized wallpaper from Wallhaven for one of the searches, leaving out results
+    tagged with an excluded word."""
     if not queries:  # nothing ticked, or game_queries emptied: there is no general fallback
         return None
     query = random.choice(queries)
@@ -1093,7 +1136,7 @@ def fetch_from_wallhaven(queries: list[str], sorting: str | None = None,
         ["toplist", "hot", "random"], weights=[5, 3, 2], k=1)[0]
 
     params = {
-        "q": query,
+        "q": wallhaven_q(query, exclude),
         **wallhaven_filters(),
         "sorting": sorting,
         "order": "desc",
@@ -1369,11 +1412,13 @@ def fetch_source(source: str, data: dict) -> Wallpaper | None:
         # (toplist only returns a handful). Once they've all been shown, use the game folders.
         queries = data["game_queries"]
         wallpaper = queries and download_wallpaper(
-            lambda: fetch_from_wallhaven(queries, "random", source="game"), attempts=2)
+            lambda: fetch_from_wallhaven(queries, "random", source="game", exclude=data["exclude_words"]),
+            attempts=2)
         return wallpaper or pick_local_wallpaper([Path(f) for f in data["game_folders"]])
     if source == "museum":
         return download_wallpaper(fetch_from_museum, attempts=3)
-    return download_wallpaper(lambda: fetch_from_wallhaven(wallhaven_query_pool(data)))
+    return download_wallpaper(
+        lambda: fetch_from_wallhaven(wallhaven_query_pool(data), exclude=data["exclude_words"]))
 
 
 def get_new_wallpaper() -> Wallpaper | None:
@@ -1782,6 +1827,8 @@ class WallSwapApp:
             shares=lambda d: source_shares(source_weights(d)),
             drop_reason=drop_reason,
             clean_search=clean_search,
+            clean_exclude=clean_exclude_word,
+            exclude_problem=exclude_word_problem,
             patch=settings_patch,
             ask_folder=self.ask_folder,
             save=self._save_from_window,
@@ -1799,7 +1846,7 @@ class WallSwapApp:
         (count is None if the check failed)."""
         def work():
             try:
-                count = count_wallhaven(query)
+                count = count_wallhaven(query, settings.snapshot()["exclude_words"])
             except Exception as e:  # offline, timeout, HTTP error or an odd reply: the window just says so
                 log.warning(f"Couldn't count Wallhaven results for {query!r}: {e}")
                 count = None
